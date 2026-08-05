@@ -1,0 +1,8 @@
+Disables Jekyll processing on GitHub Pages.
+
+Without this file, Pages runs the repository through Jekyll, which silently
+skips anything whose name begins with an underscore. That includes
+disypher/__init__.py — the engine itself — so the page loads, the fetch
+returns 404, and both panels stay empty with no error visible to the visitor.
+
+The file must exist and its name matters; its contents do not.

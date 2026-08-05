@@ -2820,7 +2820,16 @@ json.dumps(disypher.analyse(_text, only, pins).as_dict(), ensure_ascii=False)
           setStatus("ready", t("ready"));
           run();
         } catch (error) {
+          // A failure here leaves both panels empty, and a small grey line in
+          // a corner is not enough: the visitor sees a blank tool and assumes
+          // it is broken rather than unloaded. The reason goes where the
+          // result would have been.
           setStatus("error", t("bootFailed"));
+          const message =
+            `<p class="untouched alert">${escapeHtml(t("bootFailed"))}</p>` +
+            `<p class="empty">${escapeHtml(String(error.message || error))}</p>`;
+          $("output").innerHTML = message;
+          $("encode-output").innerHTML = message;
         }
       }
 
