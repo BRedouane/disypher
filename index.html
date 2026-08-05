@@ -1,0 +1,2841 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Disypher — classical cipher analyser</title>
+    <meta
+      name="description"
+      content="Decrypt a text and rank the hypotheses by confidence. Python engine running in the browser."
+    />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500&family=IBM+Plex+Mono:wght@400;500&display=swap"
+      rel="stylesheet"
+    />
+
+    <!--
+      One file, no build step, no framework.
+
+      The engine is not rewritten in JavaScript: `cipher.py` is loaded as-is and
+      executed by Pyodide, a build of Python compiled to WebAssembly. The same
+      file therefore runs in a terminal and in this page.
+
+      The engine returns no ready-made sentences: it returns codes and
+      parameters. The wording seen here is assembled by the page, which is what
+      makes it translatable without touching the library.
+
+      Layout: input and settings on the left, result on the right. The result
+      never falls below the fold, and changing a setting re-runs the analysis
+      with nothing to confirm.
+    -->
+    <style>
+      :root {
+        --ink: #08080a;
+        --surface: #101013;
+        --surface-2: #0b0b0d;
+        --line: rgba(241, 240, 235, 0.1);
+        --line-strong: rgba(241, 240, 235, 0.22);
+        --paper: #f1f0eb;
+        --muted: #9b9b98;
+        --faint: #676764;
+        --acid: #c8ff3d;
+        --purple: #9d84ff;
+        --amber: #ffb454;
+        --alert: #ff8b7a;
+        --mono: "IBM Plex Mono", ui-monospace, monospace;
+        --sans: "DM Sans", system-ui, sans-serif;
+        --ease: cubic-bezier(0.22, 1, 0.36, 1);
+        --r-pane: 22px;
+        --r-card: 14px;
+        --r-ctrl: 9px;
+      }
+
+      * { box-sizing: border-box; }
+
+      /* Wherever digits carry meaning — shifts, scores, indices — a slashed
+         zero and tabular figures avoid confusion and stop columns from
+         shifting as values change. */
+      .chip, .result-detail, .result-score, .variant-params, .variant-score,
+      .metric strong, .status, .stage-label {
+        font-variant-numeric: slashed-zero tabular-nums;
+        font-feature-settings: "zero" 1, "tnum" 1;
+      }
+
+      /* The whole page is sized in `rem`, so varying the root is enough to make
+         it breathe: it grows with the window instead of staying frozen at small
+         type on a 27-inch screen, without ever dropping below 16px or passing
+         18.5. The useful range is narrow — two and a half points separate too
+         small from too large. */
+      html {
+        font-size: clamp(16px, 0.22vw + 14.6px, 18.5px);
+        scroll-behavior: smooth;
+      }
+
+      /* Scrollbars.
+         The Windows default is wide, light and opaque, cutting across the
+         right-hand panel. It is kept — removing it would remove the only clue
+         that more content lies below — but reduced to a thin line that only
+         becomes noticeable on hover.
+
+         Two syntaxes, no redundancy: the first is the standard property,
+         understood by Firefox; the second, prefixed, covers Chrome, Edge and
+         Safari, which do not implement the first yet. */
+      * {
+        scrollbar-width: thin;
+        scrollbar-color: rgba(241, 240, 235, 0.16) transparent;
+      }
+      ::-webkit-scrollbar { width: 9px; height: 9px; }
+      ::-webkit-scrollbar-track { background: transparent; }
+      ::-webkit-scrollbar-thumb {
+        /* A transparent border combined with `padding-box` visually thins the
+           thumb without shrinking the clickable area: the mouse target stays
+           comfortable while only a line is drawn. */
+        background: rgba(241, 240, 235, 0.14);
+        background-clip: padding-box;
+        border: 2px solid transparent;
+        border-radius: 99px;
+      }
+      ::-webkit-scrollbar-thumb:hover {
+        background: rgba(241, 240, 235, 0.3);
+        background-clip: padding-box;
+      }
+      ::-webkit-scrollbar-corner { background: transparent; }
+
+      body {
+        margin: 0;
+        min-height: 100dvh;
+        background:
+          radial-gradient(1100px 620px at 8% -12%, rgba(157, 132, 255, 0.14), transparent 60%),
+          radial-gradient(900px 520px at 100% 4%, rgba(200, 255, 61, 0.075), transparent 58%),
+          var(--ink);
+        color: var(--paper);
+        font-family: var(--sans);
+        line-height: 1.6;
+      }
+
+      .wrap { max-width: 84rem; margin: 0 auto; padding: 2.6rem 3vw 4rem; }
+
+      /* ── Header ──────────────────────────────────────────────── */
+      .masthead {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 2rem;
+        margin-bottom: 1.6rem;
+      }
+      .brand { display: flex; align-items: baseline; gap: 1rem; min-width: 0; }
+      h1 {
+        margin: 0;
+        font-size: 1.9rem;
+        font-weight: 500;
+        letter-spacing: -0.045em;
+        line-height: 1;
+      }
+      h1 span { color: var(--acid); }
+      .tagline {
+        min-width: 0;
+        color: var(--faint);
+        font: 0.62rem var(--mono);
+        letter-spacing: 0.04em;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .head-actions { display: flex; align-items: center; gap: 0.6rem; flex-shrink: 0; }
+      .backlink {
+        padding: 0.36rem 0.8rem;
+        border: 1px solid var(--line);
+        border-radius: var(--r-ctrl);
+        color: var(--muted);
+        font: 0.6rem var(--mono);
+        text-decoration: none;
+        white-space: nowrap;
+        transition: 0.2s var(--ease);
+      }
+      .backlink:hover { border-color: var(--purple); color: var(--purple); }
+
+      /* Language and mode selectors: a single rail where only the active segment
+         carries a surface. Two filled buttons side by side would compete for
+         attention without indicating anything. */
+      .segmented {
+        display: flex;
+        gap: 0.2rem;
+        padding: 0.22rem;
+        border: 1px solid var(--line);
+        border-radius: 11px;
+        background: var(--surface-2);
+      }
+      .segmented button {
+        padding: 0.34rem 0.8rem;
+        border: 0;
+        border-radius: 8px;
+        background: transparent;
+        color: var(--faint);
+        font: 0.6rem var(--mono);
+        letter-spacing: 0.06em;
+        cursor: pointer;
+        transition: 0.2s var(--ease);
+      }
+      .segmented button:hover { color: var(--paper); }
+      .segmented button[aria-pressed="true"] {
+        background: rgba(241, 240, 235, 0.08);
+        color: var(--paper);
+      }
+      .mode-switch button[aria-pressed="true"] {
+        background: rgba(200, 255, 61, 0.13);
+        color: var(--acid);
+      }
+      .mode-switch { padding: 0.26rem; }
+      .mode-switch button { padding: 0.42rem 1.15rem; font-size: 0.64rem; text-transform: uppercase; }
+
+      /* ── Espace de travail ───────────────────────────────────── */
+      .app {
+        display: grid;
+        grid-template-columns: minmax(0, 1.02fr) minmax(0, 0.98fr);
+        gap: 1.1rem;
+        align-items: start;
+      }
+      @media (max-width: 1120px) { .app { grid-template-columns: 1fr; } }
+
+      /* Panels are not plain rectangles: a very light gradient surface, a pale
+         line along the top that suggests a lit edge, and a generous radius.
+         The whole reads as an object rather than a border. */
+      .pane {
+        position: relative;
+        border: 1px solid var(--line);
+        border-radius: var(--r-pane);
+        background:
+          linear-gradient(180deg, rgba(241, 240, 235, 0.045), rgba(241, 240, 235, 0.012) 38%,
+                          rgba(241, 240, 235, 0.006)),
+          var(--surface);
+        box-shadow: 0 24px 60px -32px rgba(0, 0, 0, 0.9);
+        /* No `overflow: hidden`: it clipped tooltips extending past the panel.
+           The top highlight fades to transparent at both ends, so nothing
+           visibly spills out of the rounded corners. */
+      }
+      .pane::before {
+        content: "";
+        position: absolute;
+        inset: 0 0 auto;
+        height: 1px;
+        background: linear-gradient(90deg, transparent, rgba(241, 240, 235, 0.22), transparent);
+      }
+
+      .pane-out {
+        position: sticky;
+        top: 1.4rem;
+        max-height: calc(100dvh - 2.8rem);
+        display: flex;
+        flex-direction: column;
+      }
+      @media (max-width: 1120px) { .pane-out { position: static; max-height: none; } }
+
+      /* An accent line on the flank of the output panel: it distinguishes the
+         result from the input without adding another frame. */
+      .pane-out::after {
+        content: "";
+        position: absolute;
+        left: 0; top: 18%; bottom: 18%;
+        width: 2px;
+        border-radius: 2px;
+        background: linear-gradient(180deg, transparent, var(--acid), transparent);
+        opacity: 0.5;
+      }
+
+      .pane-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 1rem;
+        padding: 1.05rem 1.4rem 0.9rem;
+        border-bottom: 1px solid var(--line);
+      }
+      .eyebrow {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        color: var(--faint);
+        font: 0.62rem var(--mono);
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+      }
+      .eyebrow::before {
+        content: "";
+        width: 14px;
+        height: 1px;
+        background: var(--line-strong);
+      }
+      .pane-body { padding: 1.2rem 1.4rem 1.4rem; }
+      .pane-out .pane-body { overflow-y: auto; flex: 1 1 auto; }
+
+      /* ── Champ de saisie ─────────────────────────────────────── */
+      /* The field is recessed rather than placed on top: darker than the panel,
+         with no border of its own. It reads as a hollow, not another box. */
+      textarea {
+        width: 100%;
+        min-height: 168px;
+        padding: 1rem 1.1rem;
+        border: 1px solid transparent;
+        border-radius: var(--r-card);
+        background: var(--surface-2);
+        box-shadow: inset 0 1px 0 rgba(0, 0, 0, 0.5);
+        color: var(--paper);
+        font: 0.88rem/1.75 var(--mono);
+        resize: vertical;
+      }
+      textarea:focus { outline: none; border-color: rgba(200, 255, 61, 0.45); }
+      textarea::placeholder { color: var(--faint); }
+
+      input, select {
+        width: 100%;
+        padding: 0.5rem 0.7rem;
+        border: 1px solid var(--line);
+        border-radius: var(--r-ctrl);
+        background: var(--surface-2);
+        color: var(--paper);
+        font: 0.78rem var(--mono);
+      }
+      input:focus, select:focus { outline: 1px solid var(--acid); outline-offset: 0; }
+      input::placeholder { color: var(--faint); }
+      /* Native dropdowns inherit the system light theme: without these two
+         rules the list opens white on white. */
+      select { color-scheme: dark; }
+      select option { background: var(--surface); color: var(--paper); }
+
+      /* ── Settings ────────────────────────────────────────────── */
+      /* Thin separators rather than stacked cards: the options form one
+         articulated block, not four repeated frames. */
+      .section { padding-top: 1.15rem; margin-top: 1.15rem; border-top: 1px solid var(--line); }
+      .section-title {
+        margin: 0 0 0.75rem;
+        color: var(--muted);
+        font: 500 0.64rem var(--mono);
+        letter-spacing: 0.06em;
+      }
+      .hint { margin: 0 0 0.85rem; color: var(--faint); font: 0.63rem/1.55 var(--mono); }
+
+      .chips { display: flex; flex-wrap: wrap; gap: 0.32rem; }
+      .chip {
+        min-width: 2.3rem;
+        padding: 0.26rem 0.6rem;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: transparent;
+        color: var(--faint);
+        font: 0.72rem var(--mono);
+        letter-spacing: 0.02em;
+        text-align: center;
+        cursor: pointer;
+        transition: 0.15s var(--ease);
+      }
+      .chip:hover { border-color: var(--line-strong); color: var(--paper); }
+      .chip[aria-pressed="true"] {
+        border-color: transparent;
+        background: rgba(200, 255, 61, 0.14);
+        color: var(--acid);
+      }
+      .chip-method { text-transform: uppercase; font-size: 0.64rem; min-width: auto; }
+      .chip-method[aria-pressed="true"] {
+        background: rgba(157, 132, 255, 0.16);
+        color: var(--purple);
+      }
+      .chip-all { min-width: auto; }
+      .chip-range { min-width: auto; }
+
+      .pinblock + .pinblock { margin-top: 0.9rem; }
+      .pinblock > h4 {
+        margin: 0 0 0.5rem;
+        color: var(--paper);
+        font: 500 0.7rem var(--mono);
+      }
+      .pinrow { display: flex; flex-wrap: wrap; align-items: center; gap: 0.32rem; margin-bottom: 0.45rem; }
+      .pinrow > .tiny-label {
+        flex: 0 0 6.4rem;
+        color: var(--faint);
+        font: 0.61rem var(--mono);
+        letter-spacing: 0.09em;
+        text-transform: uppercase;
+      }
+      .pinrow input[type="text"] { flex: 1 1 9rem; width: auto; }
+      .pinnote {
+        margin: 0.1rem 0 0;
+        color: var(--faint);
+        font: 0.62rem/1.55 var(--mono);
+      }
+      .pinhint { margin: -0.15rem 0 0.6rem 6.7rem; color: var(--faint); font: 0.6rem var(--mono); }
+
+      /* ── Étapes de chiffrement ───────────────────────────────── */
+      .step {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: flex-end;
+        gap: 0.55rem;
+        padding: 0.75rem 0.85rem;
+        border: 1px solid var(--line);
+        border-radius: var(--r-card);
+        background: var(--surface-2);
+      }
+      .step + .step { margin-top: 0.5rem; }
+      .step-index {
+        flex: 0 0 1.3rem;
+        align-self: center;
+        color: var(--purple);
+        font: 500 0.76rem var(--mono);
+      }
+      .step-field { flex: 0 1 7.6rem; }
+      .step-field.wide { flex: 1 1 9rem; }
+      .step-field .tiny-label {
+        display: block;
+        margin-bottom: 0.3rem;
+        color: var(--faint);
+        font: 0.59rem var(--mono);
+        letter-spacing: 0.09em;
+        text-transform: uppercase;
+      }
+      .step-flags { display: flex; flex-wrap: wrap; gap: 0.3rem; align-self: center; }
+      .icon-btn {
+        align-self: center;
+        margin-left: auto;
+        width: 1.7rem; height: 1.7rem;
+        display: grid; place-items: center;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: transparent;
+        color: var(--faint);
+        font: 0.7rem var(--mono);
+        cursor: pointer;
+        transition: 0.15s var(--ease);
+      }
+      .icon-btn:hover:not([disabled]) { border-color: var(--amber); color: var(--amber); }
+      .icon-btn[disabled] { opacity: 0.28; cursor: not-allowed; }
+
+      .ghost {
+        margin-top: 0.7rem;
+        padding: 0.5rem 0.9rem;
+        border: 1px dashed var(--line-strong);
+        border-radius: var(--r-ctrl);
+        background: transparent;
+        color: var(--muted);
+        font: 0.64rem var(--mono);
+        cursor: pointer;
+        transition: 0.2s var(--ease);
+      }
+      .ghost:hover:not([disabled]) { border-color: var(--acid); border-style: solid; color: var(--acid); }
+      .ghost[disabled] { opacity: 0.35; cursor: not-allowed; }
+
+      .chain-foot { display: flex; align-items: center; gap: 0.8rem; }
+      .step-count {
+        color: var(--faint);
+        font: 0.64rem var(--mono);
+        font-variant-numeric: slashed-zero tabular-nums;
+      }
+      .step-count.at-limit { color: var(--amber); }
+
+      /* ── Statut ──────────────────────────────────────────────── */
+      .status {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.45rem;
+        color: var(--faint);
+        font: 0.64rem var(--mono);
+      }
+      .status::before {
+        content: "";
+        width: 6px; height: 6px;
+        border-radius: 50%;
+        background: var(--faint);
+        transition: 0.25s var(--ease);
+      }
+      .status[data-state="ready"]::before { background: var(--acid); box-shadow: 0 0 8px rgba(200,255,61,.6); }
+      .status[data-state="busy"]::before { background: var(--amber); animation: pulse 0.9s ease-in-out infinite; }
+      .status[data-state="error"]::before { background: var(--amber); }
+      @keyframes pulse { 50% { opacity: 0.25; } }
+
+      /* ── Result ──────────────────────────────────────────────── */
+      .verdict {
+        padding: 0.85rem 1rem 0.85rem 1.05rem;
+        border-radius: var(--r-card);
+        border-left: 2px solid;
+        font-size: 0.82rem;
+      }
+      .verdict.sure { border-color: var(--acid); background: rgba(200, 255, 61, 0.06); }
+      .verdict.unsure { border-color: var(--amber); background: rgba(255, 180, 84, 0.06); }
+      .verdict.plain { border-color: var(--purple); background: rgba(157, 132, 255, 0.07); }
+      .verdict b { display: block; margin-bottom: 0.2rem; font-size: 0.78rem; }
+      .verdict.sure b { color: var(--acid); }
+      .verdict.unsure b { color: var(--amber); }
+      .verdict.plain b { color: var(--purple); }
+      .verdict p { margin: 0; color: var(--muted); font-size: 0.75rem; line-height: 1.6; }
+
+      .metrics { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.5rem; margin-top: 0.9rem; }
+      .metric {
+        padding: 0.6rem 0.75rem;
+        border-radius: 11px;
+        background: var(--surface-2);
+      }
+      .metric span {
+        display: block;
+        color: var(--faint);
+        font: 0.59rem var(--mono);
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+      }
+      .metric strong { font: 500 1.02rem var(--mono); }
+
+      .results { margin-top: 0.9rem; display: flex; flex-direction: column; gap: 0.5rem; }
+      .result {
+        padding: 0.85rem 1rem;
+        border: 1px solid var(--line);
+        border-radius: var(--r-card);
+        background: var(--surface-2);
+        animation: rise 0.4s var(--ease) both;
+      }
+      .result.best {
+        border-color: rgba(200, 255, 61, 0.35);
+        background: linear-gradient(180deg, rgba(200, 255, 61, 0.05), transparent 60%), var(--surface-2);
+      }
+      @keyframes rise { from { opacity: 0; transform: translateY(7px); } }
+
+      .result-top { display: flex; align-items: baseline; flex-wrap: wrap; gap: 0.6rem; }
+      .result-name { font: 500 0.8rem var(--mono); }
+      .result.best .result-name { color: var(--acid); }
+      .result-detail { color: var(--faint); font: 0.63rem var(--mono); }
+      .result-score { margin-left: auto; font: 500 0.8rem var(--mono); }
+      .tag {
+        padding: 0.08rem 0.38rem;
+        border: 1px solid var(--purple);
+        border-radius: 5px;
+        color: var(--purple);
+        font: 0.59rem var(--mono);
+        text-transform: uppercase;
+      }
+
+      .bar { height: 2px; margin: 0.6rem 0; border-radius: 2px; background: rgba(241,240,235,.08); }
+      .bar i {
+        display: block; height: 100%; border-radius: 2px;
+        background: var(--acid);
+        transform-origin: left;
+        animation: grow 0.55s var(--ease) both;
+      }
+      .result:not(.best) .bar i { background: var(--line-strong); }
+      @keyframes grow { from { transform: scaleX(0); } }
+
+      /* Text is no longer truncated at the source: it is rendered whole and the
+         height is contained. Cutting the data to fit the layout decides for the
+         reader what they are allowed to see; a scrolling frame decides
+         nothing. */
+      .plaintext {
+        margin: 0;
+        max-height: 13rem;
+        overflow-y: auto;
+        color: var(--paper);
+        font: 0.79rem/1.7 var(--mono);
+        white-space: pre-wrap;
+        word-break: break-word;
+      }
+      .result:not(.best) .plaintext { color: var(--muted); }
+
+
+      /* Report of what a method left untouched. Believing a text protected when
+         half of it came through in the clear is the most expensive mistake
+         available here. */
+      .untouched {
+        display: flex;
+        align-items: flex-start;
+        gap: 0.45rem;
+        margin-top: 0.6rem;
+        padding: 0.42rem 0.6rem;
+        border-left: 2px solid var(--amber);
+        border-radius: 0 7px 7px 0;
+        background: rgba(255, 180, 84, 0.08);
+        color: var(--amber);
+        font: 0.67rem/1.5 var(--mono);
+      }
+      .untouched::before { content: "i"; font-weight: 600; font-style: italic; opacity: 0.85; }
+      /* Red is reserved for the one serious case: the method did nothing. */
+      .untouched.alert {
+        border-left-color: var(--alert);
+        background: rgba(255, 139, 122, 0.1);
+        color: var(--alert);
+      }
+      .untouched.alert::before { content: "!"; font-style: normal; }
+      .stage .untouched { margin-top: 0.35rem; }
+      .peel {
+        margin-top: 0.65rem;
+        padding: 0.28rem 0.6rem;
+        border: 1px solid var(--line);
+        border-radius: 7px;
+        background: transparent;
+        color: var(--faint);
+        font: 0.62rem var(--mono);
+        cursor: pointer;
+        transition: 0.15s var(--ease);
+      }
+      .peel:hover { border-color: var(--acid); color: var(--acid); }
+
+      /* Variants use <details>: the browser already provides folding, keyboard
+         handling and screen-reader announcement. The list is complete —
+         truncating part of it would give the illusion of exhaustiveness
+         without offering it. */
+      details.variants { margin-top: 0.7rem; border-top: 1px solid var(--line); padding-top: 0.55rem; }
+      details.variants summary {
+        color: var(--muted);
+        font: 0.62rem var(--mono);
+        cursor: pointer;
+        list-style: none;
+        user-select: none;
+      }
+      details.variants summary::-webkit-details-marker { display: none; }
+      details.variants summary::before {
+        content: "▾";
+        display: inline-block;
+        margin-right: 0.4rem;
+        color: var(--purple);
+        transition: transform 0.2s var(--ease);
+      }
+      details.variants[open] summary::before { transform: rotate(180deg); }
+      details.variants summary:hover { color: var(--paper); }
+      .variants-list { max-height: 17rem; overflow-y: auto; margin-top: 0.4rem; }
+      .variant {
+        display: flex; align-items: baseline; gap: 0.65rem;
+        padding: 0.34rem 0;
+        border-bottom: 1px solid rgba(241, 240, 235, 0.045);
+      }
+      .variant:last-child { border-bottom: 0; }
+      .variant-params { flex: 0 0 7.4rem; color: var(--purple); font: 0.62rem var(--mono); }
+      .variant-text {
+        flex: 1 1 auto; min-width: 0;
+        color: var(--muted); font: 0.64rem var(--mono);
+        overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+      }
+      .variant-score { flex: 0 0 auto; color: var(--faint); font: 0.62rem var(--mono); }
+
+      /* ── Encryption stages, output side ──────────────────────── */
+      .stage { display: flex; gap: 0.7rem; padding: 0.55rem 0; }
+      .stage + .stage { border-top: 1px solid rgba(241, 240, 235, 0.05); }
+      .stage-label { flex: 0 0 8.4rem; color: var(--purple); font: 0.64rem var(--mono); }
+      .stage-text {
+        flex: 1 1 auto; min-width: 0;
+        color: var(--muted); font: 0.72rem/1.65 var(--mono);
+        word-break: break-all;
+      }
+      .stage.final .stage-text { color: var(--paper); }
+      .stage-note { color: var(--amber); font: 0.61rem var(--mono); }
+
+      .empty { color: var(--faint); font: 0.72rem/1.7 var(--mono); }
+
+      /* ── Bouton d'information et fiche ───────────────────────── */
+      /* The chip and its "i" form a visual pair but remain two distinct
+         buttons: nesting one button inside another would break keyboard
+         navigation and screen readers. */
+      .chip-pair { display: inline-flex; align-items: stretch; gap: 2px; }
+      .chip-pair .chip { border-top-right-radius: 0; border-bottom-right-radius: 0; }
+      .info-btn {
+        display: grid;
+        place-items: center;
+        width: 1.7rem;
+        border: 1px solid var(--line);
+        border-radius: 0 8px 8px 0;
+        background: rgba(157, 132, 255, 0.09);
+        color: var(--purple);
+        /* A lowercase italic "i" reads as a stray stroke at this size. A
+           sans-serif capital cannot be mistaken for anything else. */
+        font: 600 0.86rem var(--sans);
+        line-height: 1;
+        cursor: pointer;
+        transition: 0.15s var(--ease);
+      }
+      .info-btn:hover, .info-btn:focus-visible {
+        border-color: var(--purple);
+        background: rgba(157, 132, 255, 0.2);
+        color: var(--paper);
+      }
+      .step-info {
+        border-radius: 8px;
+        width: 2rem;
+        align-self: center;
+      }
+
+      /* A touch target under 44px gets missed. The clickable area is therefore
+         extended with a pseudo-element rather than by enlarging the button:
+         layout is unchanged, only the sensitive surface grows. */
+      @media (pointer: coarse) {
+        .info-btn { position: relative; width: 2.3rem; }
+        .info-btn::after {
+          content: "";
+          position: absolute;
+          top: 50%; left: 50%;
+          width: 44px; height: 44px;
+          transform: translate(-50%, -50%);
+        }
+        .chip { min-height: 2.1rem; padding-inline: 0.7rem; }
+        .icon-btn, .modal-close { width: 2.3rem; height: 2.3rem; }
+      }
+
+
+      /* Scope tooltip, rendered in CSS from `data-tip`: no script, no floating
+         element to reposition, and it disappears on its own. `focus-within`
+         also reveals it on tab — there is no hover on a keyboard. */
+      .chip-pair { position: relative; }
+      .chip-pair::after {
+        content: attr(data-tip);
+        position: absolute;
+        bottom: calc(100% + 7px);
+        left: 0;
+        z-index: 40;
+        width: max-content;
+        max-width: 19rem;
+        padding: 0.5rem 0.7rem;
+        border: 1px solid var(--line-strong);
+        border-radius: 9px;
+        background: var(--surface);
+        box-shadow: 0 14px 34px -14px rgba(0, 0, 0, 0.9);
+        color: var(--muted);
+        font: 0.66rem/1.55 var(--mono);
+        text-transform: none;
+        letter-spacing: 0;
+        white-space: normal;
+        opacity: 0;
+        transform: translateY(3px);
+        pointer-events: none;
+        transition: 0.16s var(--ease);
+      }
+      .chip-pair:hover::after,
+      .chip-pair:focus-within::after { opacity: 1; transform: none; }
+      /* The last chips in a row overflow to the right, so their tooltip anchors
+         from the right edge to stay inside the panel. */
+      .chip-pair:nth-last-child(-n + 3)::after { left: auto; right: 0; }
+      @media (pointer: coarse) { .chip-pair::after { display: none; } }
+      .modal-backdrop {
+        position: fixed;
+        inset: 0;
+        z-index: 50;
+        display: grid;
+        place-items: center;
+        padding: 5vh 5vw;
+        background: rgba(4, 4, 6, 0.62);
+        backdrop-filter: blur(7px);
+        -webkit-backdrop-filter: blur(7px);
+        animation: fade 0.22s var(--ease);
+      }
+      @keyframes fade { from { opacity: 0; } }
+
+      .modal-card {
+        position: relative;
+        width: min(46rem, 100%);
+        max-height: 88vh;
+        overflow-y: auto;
+        padding: 2rem 2.2rem 2.2rem;
+        border: 1px solid var(--line-strong);
+        border-radius: var(--r-pane);
+        background:
+          linear-gradient(180deg, rgba(241, 240, 235, 0.05), rgba(241, 240, 235, 0.012) 40%,
+                          rgba(241, 240, 235, 0.006)),
+          var(--surface);
+        box-shadow: 0 40px 90px -30px rgba(0, 0, 0, 0.95);
+        animation: lift 0.26s var(--ease) both;
+      }
+      @keyframes lift { from { opacity: 0; transform: translateY(14px) scale(0.985); } }
+
+      .modal-close {
+        position: absolute;
+        top: 1rem; right: 1rem;
+        width: 1.9rem; height: 1.9rem;
+        display: grid; place-items: center;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: transparent;
+        color: var(--faint);
+        font: 0.72rem var(--mono);
+        cursor: pointer;
+        transition: 0.15s var(--ease);
+      }
+      .modal-close:hover { border-color: var(--amber); color: var(--amber); }
+
+      .modal-era {
+        margin: 0 0 0.35rem;
+        color: var(--purple);
+        font: 0.64rem var(--mono);
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+      }
+      .modal-title {
+        margin: 0 0 1.3rem;
+        font-size: 1.55rem;
+        font-weight: 500;
+        letter-spacing: -0.035em;
+      }
+
+      /* Collapsible sections. `<details>` supplies folding, keyboard handling
+         and screen-reader announcement without a line of script. */
+      .info-section { border-top: 1px solid var(--line); }
+      .info-section:first-child { border-top: 0; }
+      .info-section > summary {
+        display: flex;
+        align-items: center;
+        gap: 0.55rem;
+        padding: 0.95rem 0;
+        color: var(--acid);
+        font: 500 0.72rem var(--mono);
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+        cursor: pointer;
+        list-style: none;
+        user-select: none;
+      }
+      .info-section > summary::-webkit-details-marker { display: none; }
+      .info-section > summary::before {
+        content: "+";
+        width: 1.05rem; height: 1.05rem;
+        display: grid; place-items: center;
+        border: 1px solid var(--line-strong);
+        border-radius: 5px;
+        color: var(--muted);
+        font-size: 0.78rem;
+        line-height: 1;
+        transition: 0.2s var(--ease);
+      }
+      .info-section[open] > summary::before { content: "−"; border-color: var(--acid); color: var(--acid); }
+      .info-section > summary:hover::before { border-color: var(--acid); }
+      .info-content { padding-bottom: 1rem; }
+      .info-content p:last-child { margin-bottom: 0; }
+
+      /* Cross-reference to another card. A button, not a link: it goes nowhere,
+         it replaces the displayed content. */
+      .xref-self {
+        color: var(--paper);
+        font-style: normal;
+        font-weight: 500;
+      }
+      .xref {
+        padding: 0;
+        border: 0;
+        border-bottom: 1px solid rgba(200, 255, 61, 0.4);
+        background: none;
+        color: var(--acid);
+        font: inherit;
+        cursor: pointer;
+        transition: 0.15s var(--ease);
+      }
+      .xref:hover, .xref:focus-visible {
+        border-bottom-color: var(--acid);
+        background: rgba(200, 255, 61, 0.12);
+      }
+      .modal-body h3 {
+        margin: 1.4rem 0 0.5rem;
+        color: var(--acid);
+        font: 500 0.62rem var(--mono);
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+      }
+      .modal-body p { margin: 0 0 0.7rem; color: var(--muted); font-size: 0.86rem; line-height: 1.68; }
+      .modal-body p strong { color: var(--paper); font-weight: 500; }
+      .modal-body dl { margin: 0; }
+      .modal-body dt {
+        margin-top: 0.7rem;
+        color: var(--paper);
+        font: 500 0.74rem var(--mono);
+      }
+      .modal-body dd { margin: 0.15rem 0 0; color: var(--muted); font-size: 0.82rem; line-height: 1.6; }
+
+      /* Diagrams are produced by the engine, not drawn by hand, so they cannot
+         drift from what the code actually does. */
+      .diagram {
+        margin: 0.3rem 0 0.5rem;
+        padding: 0.9rem 1.1rem;
+        border: 1px solid var(--line);
+        border-radius: var(--r-card);
+        background: var(--surface-2);
+        color: var(--paper);
+        font: 0.76rem/1.75 var(--mono);
+        white-space: pre;
+        overflow-x: auto;
+      }
+
+      footer {
+        max-width: 84rem;
+        margin: 2rem auto 0;
+        padding: 0 3vw;
+        color: var(--faint);
+        font: 0.6rem/1.7 var(--mono);
+      }
+      footer a { color: var(--muted); }
+      .hidden { display: none !important; }
+
+      @media (prefers-reduced-motion: reduce) {
+        html { scroll-behavior: auto; }
+        *, *::before, *::after { animation: none !important; transition-duration: 0.01ms !important; }
+      }
+    </style>
+  </head>
+
+  <body>
+    <div class="wrap">
+      <header class="masthead">
+        <div class="brand">
+          <h1>Disy<span>pher</span></h1>
+          <p class="tagline" data-i18n="kicker"></p>
+        </div>
+        <div class="head-actions">
+          <!-- Absolute link to the main site: Disypher is meant to be published on
+               its own as a public tool, where a relative path would point
+               nowhere. -->
+          <a class="backlink" href="https://disyner.com" data-i18n="backlink"></a>
+          <div class="segmented lang" role="group" aria-label="Language">
+            <button data-lang="en" aria-pressed="true">EN</button>
+            <button data-lang="fr" aria-pressed="false">FR</button>
+          </div>
+        </div>
+      </header>
+
+      <div class="app">
+        <!-- ═══ Left column: input, then settings ═══ -->
+        <section class="pane pane-in">
+          <div class="pane-head">
+            <span class="eyebrow" id="input-eyebrow"></span>
+            <div class="segmented mode-switch" role="group" data-i18n-label="modeLabel">
+              <button data-mode="decrypt" aria-pressed="true" data-i18n="tabDecrypt"></button>
+              <button data-mode="encrypt" aria-pressed="false" data-i18n="tabEncrypt"></button>
+            </div>
+          </div>
+
+          <div class="pane-body">
+            <textarea id="cipher-input" spellcheck="false"></textarea>
+            <textarea id="plain-input" spellcheck="false" class="hidden"></textarea>
+
+            <!-- Decryption settings -->
+            <div id="opts-decrypt">
+              <div class="section">
+                <h3 class="section-title" data-i18n="filtersLabel"></h3>
+                <div class="chips" id="filters" role="group" data-i18n-label="filtersLabel"></div>
+              </div>
+
+              <div class="section hidden" id="pinbox">
+                <h3 class="section-title" data-i18n="paramsLabel"></h3>
+                <p class="hint" data-i18n="pinHint"></p>
+                <div id="pinfields"></div>
+              </div>
+
+              <div class="section">
+                <h3 class="section-title" data-i18n="bankLabel"></h3>
+                <p class="hint" data-i18n="bankHint"></p>
+                <div class="chips" id="banks" role="group" data-i18n-label="bankLabel"></div>
+              </div>
+            </div>
+
+            <!-- Encryption settings -->
+            <div id="opts-encrypt" class="hidden">
+              <div class="section">
+                <h3 class="section-title" data-i18n="chainLabel"></h3>
+                <p class="hint" data-i18n="chainHint"></p>
+                <div id="steps"></div>
+                <div class="chain-foot">
+                  <button class="ghost" id="add-step" data-i18n="addStep"></button>
+                  <span class="step-count" id="step-count"></span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- ═══ Right column: result ═══ -->
+        <section class="pane pane-out">
+          <div class="pane-head">
+            <span class="eyebrow" id="output-eyebrow"></span>
+            <span class="status" id="status" data-state="boot"></span>
+          </div>
+          <div class="pane-body">
+            <div id="output" aria-live="polite"></div>
+            <div id="encode-output" class="hidden" aria-live="polite"></div>
+          </div>
+        </section>
+      </div>
+    </div>
+
+    <!-- Explanatory card. `hidden` rather than folded away in CSS: a dialog
+         left in the flow stays reachable by keyboard and read by screen readers
+         even while invisible. -->
+    <div class="modal-backdrop hidden" id="modal">
+      <article class="modal-card" id="modal-card" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+        <button class="modal-close" id="modal-close" data-i18n-label="close">✕</button>
+        <p class="modal-era" id="modal-era"></p>
+        <h2 class="modal-title" id="modal-title"></h2>
+        <div class="modal-body" id="modal-body"></div>
+      </article>
+    </div>
+
+    <footer data-i18n-html="footer"></footer>
+
+    <script src="https://cdn.jsdelivr.net/pyodide/v0.26.4/full/pyodide.js"></script>
+    <script>
+      const $ = (id) => document.getElementById(id);
+
+      /* The page opens on a line from The Matrix encrypted with ROT13 — the most
+         recognisable cipher there is. The tool therefore solves itself on load,
+         which beats an empty field and a note explaining what to put in it. */
+      const SAMPLE_CIPHER =
+        "Jnxr hc Arb. Gur Zngevk unf lbh. Sbyybj gur juvgr enoovg. Xabpx xabpx.";
+      const SAMPLE_PLAIN = "There is no spoon. Wake up Neo, the Matrix has you.";
+
+      /* ══ Translations ══
+         English is the base language: it is the language of the library, of its
+         repository and of its eventual publication. French is a translation,
+         not the other way round. */
+      const TEXT = {
+        en: {
+          kicker: "Classical cipher analysis · Python engine in the browser",
+          backlink: "← Disyner",
+          tabDecrypt: "Decrypt",
+          tabEncrypt: "Encrypt",
+          modeLabel: "Mode",
+          inputCipher: "Encrypted text",
+          inputPlain: "Plain text",
+          outputDecrypt: "Hypotheses",
+          outputEncrypt: "Pipeline",
+          placeholderCipher: "Paste an encrypted text…",
+          placeholderPlain: "The message to encrypt…",
+          filtersLabel: "Methods",
+          paramsLabel: "Settings",
+          chainLabel: "Cipher chain",
+          pinHint:
+            "All values are tried by default. Select some to restrict the search — " +
+            "several at once is allowed. A restricted result is what that setting produces, " +
+            "not what the engine found on its own.",
+          bankLabel: "Word banks",
+          bankHint:
+            "English and French are built in. Load a bank to recognise more words: " +
+            "on a short text the vocabulary is the only signal that counts.",
+          bankLoading: "loading…",
+          chainHint:
+            "Steps apply in order, top to bottom. Some ciphers lose information: Morse keeps " +
+            "neither case nor punctuation, and a Caesar placed after it changes nothing — " +
+            "there is no letter left to shift. A chain is capped at 10 steps; a method that is its own inverse (Atbash, Reversed, ROT13) is allowed once, and Base64 twice — it only has two forms.",
+          addStep: "+ Add a step",
+          removeStep: "Remove this step",
+          inert: "(unchanged)",
+          method: "Method",
+          scopePartial: "this only touched {changed} — no effect on {untouched}.",
+          scopeNothing: "this changed nothing at all — no effect on {untouched}.",
+          lossPermanent: "permanent loss: {what} will not come back when decrypting.",
+          clsPunctuation: "the punctuation", clsCase: "the capitals",
+          clsLetters: "the letters", clsDigits: "the digits", clsSymbols: "the symbols",
+          and: "and",
+          close: "Close",
+          aboutCipher: "About {name}",
+          infoHow: "How it works",
+          infoHistory: "History",
+          infoParams: "Parameters",
+          infoNoParams: "None. This cipher has no setting at all.",
+          pWidth: "Key width",
+          pLetterSep: "Letter sep.",
+          autoBeaufort: "The key is recovered automatically, like Vigenère. Give one to force it.",
+          autoColumnar: "Widths 2 to 5 are searched automatically — only the key's alphabetical order matters, not its letters. Wider keys cost factorially more: impose one to search it.",
+          pBits: "Word width",
+          noSetting: "This cipher has no setting — it is its own inverse.",
+          autoBase64: "Standard and URL variants are both accepted, padding optional.",
+          autoHex: "Separators, colons and the 0x prefix are stripped automatically.",
+          autoBinary: "Separated or continuous streams are both read. Word width is detected; force it if the guess is wrong.",
+          autoMorse: "Word separator detected automatically: slash, pipe or double space.",
+          all: "All",
+          pShift: "Shift", pA: "Mult. a", pB: "Add. b", pKey: "Key",
+          pRails: "Rails", pOffset: "Offset", pSep: "Separator", pPrefix: "Prefix",
+          keyHint: "one or more keys, comma separated",
+          fAutokey: "Autokey", fUrlsafe: "URL safe", fUpper: "Uppercase",
+          booting: "Loading engine…",
+          ready: "Live",
+          working: "Working…",
+          bootFailed: "Engine failed — serve this page over HTTP.",
+          bankFailed: "Bank could not be loaded.",
+          headingSure: "Hypothesis retained",
+          headingUnsure: "Uncertain verdict",
+          headingPlain: "Already plain text",
+          mLetters: "Letters", mIoc: "Coincidence", mCount: "Hypotheses",
+          noCandidate: "No known method produces a usable result.",
+          emptyInput: "Type or paste a text on the left. The result appears here as you type.",
+          variantsOne: "1 other setting",
+          variantsMany: "{n} other settings — all of them",
+          pinnedTag: "restricted",
+          peel: "↑ Use as input",
+          reuse: "↑ Decrypt this",
+          langOf: { en: "English", fr: "French", es: "Spanish", de: "German", it: "Italian" },
+          fallback: "{label} — text recognised as {language}.",
+          reasons: {
+            empty: "No text provided.",
+            already_plain:
+              "This text is already readable: nothing suggests it is encrypted. " +
+              "The hypotheses below are kept for comparison only.",
+            short_sample:
+              "Short sample ({length} letters). Statistical analysis is unreliable below " +
+              "{minimum} letters — the candidates below are indicative.",
+            no_match:
+              "No convincing hypothesis. The text may use a method not covered here, " +
+              "or a key that could not be recovered.",
+            ambiguous: "Two hypotheses are too close to separate. A longer text would settle it.",
+            polyalphabetic:
+              "The index of coincidence is low: the cipher is polyalphabetic. Vigenère with a " +
+              "short key is broken automatically; a long key, an autokey variant or a stream " +
+              "cipher is not.",
+          },
+          ciphers: {
+            caesar: "Caesar", rot13: "ROT13", rot5: "ROT5", rot18: "ROT18", rot47: "ROT47", atbash: "Atbash",
+            affine: "Affine", vigenere: "Vigenère", beaufort: "Beaufort",
+            railfence: "Rail fence", columnar: "Columnar", reverse: "Reversed",
+            base64: "Base64", hex: "Hexadecimal", binary: "Binary", morse: "Morse",
+          },
+          dShift: "shift {v}", dRails: "{v} rails", dOffset: "offset {v}",
+          dKey: 'key "{v}"', dValid: "valid decoding",
+          footer:
+            'Engine: <code>cipher.py</code> — standard library only, no dependencies. Run here by ' +
+            '<a href="https://pyodide.org" target="_blank" rel="noopener noreferrer">Pyodide</a>, ' +
+            'Python compiled to WebAssembly: this page runs the original file, not a JavaScript translation.',
+        },
+        fr: {
+          kicker: "Analyse de chiffrements classiques · moteur Python dans le navigateur",
+          backlink: "← Disyner",
+          tabDecrypt: "Déchiffrer",
+          tabEncrypt: "Chiffrer",
+          modeLabel: "Mode",
+          inputCipher: "Texte chiffré",
+          inputPlain: "Texte en clair",
+          outputDecrypt: "Hypothèses",
+          outputEncrypt: "Chaîne",
+          placeholderCipher: "Colle un texte chiffré…",
+          placeholderPlain: "Le message à chiffrer…",
+          filtersLabel: "Méthodes",
+          paramsLabel: "Réglages",
+          chainLabel: "Chaîne de chiffrement",
+          pinHint:
+            "Toutes les valeurs sont essayées par défaut. Sélectionnes-en pour restreindre " +
+            "la recherche — plusieurs à la fois est permis. Un résultat restreint est ce que " +
+            "ce réglage produit, non ce que le moteur a trouvé de lui-même.",
+          bankLabel: "Banques de mots",
+          bankHint:
+            "L'anglais et le français sont intégrés. Charge une banque pour reconnaître plus " +
+            "de mots : sur un texte court, le vocabulaire est le seul signal qui compte.",
+          bankLoading: "chargement…",
+          chainHint:
+            "Les étapes s'appliquent dans l'ordre, de haut en bas. Certains chiffrements " +
+            "perdent de l'information : le morse ne conserve ni la casse ni la ponctuation, " +
+            "et un César placé après lui ne change rien — il ne reste aucune lettre à décaler. La chaîne est plafonnée à 10 étapes ; une méthode qui est sa propre inverse (Atbash, Inversé, ROT13) n'est admise qu'une fois, et Base64 deux — elle n'a que deux formes.",
+          addStep: "+ Ajouter une étape",
+          removeStep: "Retirer cette étape",
+          inert: "(inchangé)",
+          method: "Méthode",
+          scopePartial: "cette méthode n'a touché que {changed} — aucun effet sur {untouched}.",
+          scopeNothing: "cette méthode n'a rien changé du tout — aucun effet sur {untouched}.",
+          lossPermanent: "perte définitive : {what} ne reviendront pas au déchiffrement.",
+          clsPunctuation: "la ponctuation", clsCase: "les majuscules",
+          clsLetters: "les lettres", clsDigits: "les chiffres", clsSymbols: "les symboles",
+          and: "et",
+          close: "Fermer",
+          aboutCipher: "À propos de {name}",
+          infoHow: "Principe",
+          infoHistory: "Histoire",
+          infoParams: "Paramètres",
+          infoNoParams: "Aucun. Ce chiffrement n'a pas le moindre réglage.",
+          pWidth: "Largeur de clé",
+          pLetterSep: "Sép. lettres",
+          autoBeaufort: "La clé est retrouvée seule, comme pour Vigenère. Donnes-en une pour l'imposer.",
+          autoColumnar: "Les largeurs 2 à 5 sont cherchées seules — seul l'ordre alphabétique de la clé compte, pas ses lettres. Au-delà le coût est factoriel : impose une largeur pour la chercher.",
+          pBits: "Largeur du mot",
+          noSetting: "Ce chiffrement n'a aucun réglage — il est sa propre inverse.",
+          autoBase64: "Les variantes standard et URL sont acceptées, le rembourrage est facultatif.",
+          autoHex: "Séparateurs, deux-points et préfixe 0x sont retirés automatiquement.",
+          autoBinary: "Flux séparé ou continu, les deux sont lus. La largeur du mot est détectée ; impose-la si la déduction est fausse.",
+          autoMorse: "Séparateur de mots détecté seul : barre, tube ou double espace.",
+          all: "Tout",
+          pShift: "Décalage", pA: "Mult. a", pB: "Add. b", pKey: "Clé",
+          pRails: "Rails", pOffset: "Décalage", pSep: "Séparateur", pPrefix: "Préfixe",
+          keyHint: "une ou plusieurs clés, séparées par des virgules",
+          fAutokey: "Autokey", fUrlsafe: "Variante URL", fUpper: "Majuscules",
+          booting: "Chargement du moteur…",
+          ready: "En direct",
+          working: "Analyse…",
+          bootFailed: "Moteur indisponible — sers cette page en HTTP.",
+          bankFailed: "La banque n'a pas pu être chargée.",
+          headingSure: "Hypothèse retenue",
+          headingUnsure: "Verdict incertain",
+          headingPlain: "Texte déjà en clair",
+          mLetters: "Lettres", mIoc: "Coïncidence", mCount: "Hypothèses",
+          noCandidate: "Aucune méthode connue ne produit de résultat exploitable.",
+          emptyInput: "Écris ou colle un texte à gauche. Le résultat apparaît ici à mesure.",
+          variantsOne: "1 autre réglage",
+          variantsMany: "{n} autres réglages — tous",
+          pinnedTag: "restreint",
+          peel: "↑ Reprendre en entrée",
+          reuse: "↑ Déchiffrer ceci",
+          langOf: { en: "anglais", fr: "français", es: "espagnol", de: "allemand", it: "italien" },
+          fallback: "{label} — texte reconnu comme {language}.",
+          reasons: {
+            empty: "Aucun texte fourni.",
+            already_plain:
+              "Ce texte est déjà lisible : rien n'indique qu'il soit chiffré. " +
+              "Les hypothèses ci-dessous ne sont conservées qu'à titre de comparaison.",
+            short_sample:
+              "Échantillon court ({length} lettres). L'analyse statistique n'est pas fiable " +
+              "en dessous de {minimum} lettres — les candidats ci-dessous sont indicatifs.",
+            no_match:
+              "Aucune hypothèse convaincante. Le texte est peut-être chiffré par une méthode " +
+              "non couverte, ou avec une clé qui n'a pas pu être retrouvée.",
+            ambiguous:
+              "Deux hypothèses sont trop proches pour être départagées. " +
+              "Un texte plus long lèverait l'ambiguïté.",
+            polyalphabetic:
+              "L'indice de coïncidence est bas : le chiffrement est polyalphabétique. " +
+              "Vigenère à clé courte est cassé automatiquement ; une clé longue, un autokey " +
+              "ou un chiffrement à flux ne le sont pas.",
+          },
+          ciphers: {
+            caesar: "César", rot13: "ROT13", rot5: "ROT5", rot18: "ROT18", rot47: "ROT47", atbash: "Atbash",
+            affine: "Affine", vigenere: "Vigenère", beaufort: "Beaufort",
+            railfence: "Rail fence", columnar: "Colonnes", reverse: "Inversé",
+            base64: "Base64", hex: "Hexadécimal", binary: "Binaire", morse: "Morse",
+          },
+          dShift: "décalage {v}", dRails: "{v} rails", dOffset: "décalage {v}",
+          dKey: "clé « {v} »", dValid: "décodage valide",
+          footer:
+            'Moteur : <code>cipher.py</code> — bibliothèque standard uniquement, aucune dépendance. ' +
+            'Exécuté ici par <a href="https://pyodide.org" target="_blank" rel="noopener noreferrer">Pyodide</a>, ' +
+            "une compilation de Python en WebAssembly : la page fait tourner le fichier original, " +
+            "pas une traduction en JavaScript.",
+        },
+      };
+
+
+      /* ══ Explanatory cards ══
+         The diagrams are produced by `cipher.py` itself — a diagram drawn
+         separately eventually lies about what the code does. */
+      const DIAGRAMS = {
+        railfence: "rail 1  A···C···D···\nrail 2  ·T·A·K·T·A·N\nrail 3  ··T···A···W·\n\nread →  ACDTAKTANTAW",
+        columnar: "key    Z  E  B  R  A\norder  5  3  2  4  1\n       ─  ─  ─  ─  ─\n       A  T  T  A  C\n       K  A  T  D  A\n       W  N  x  x  x\n\nread columns 1→5:  CAxTTxTANADxAKW",
+        vigenere: "plain   A T T A C K A T D A W N\nkey     L E M O N L E M O N L E\ncipher  L X F O P V E F R N H R",
+      };
+
+      const INFO = {
+              "en": {
+                      "caesar": {
+                              "era": "Ancient Rome · 1st century BC",
+                              "how": [
+                                      "Every letter is replaced by another one a little further along the alphabet, always by the same number of places. With a shift of 3: A becomes D, B becomes E, C becomes F. At the end you wrap around — X becomes A.",
+                                      "Spaces, punctuation and capitals stay where they are. That is exactly the problem: the shape of the message stays visible. A three-letter word is still a three-letter word, and in English it is quite likely to be “the”.",
+                                      "There are only 25 possible shifts. A computer tries them all instantly, then looks at which one produced real words. That is precisely what this tool does."
+                              ],
+                              "history": [
+                                      "Suetonius tells us Julius Caesar used a shift of 3 for military messages. At the time that was enough: most of his enemies simply could not read.",
+                                      "It is the oldest cipher everybody knows, and probably the first one anyone learns. It is still used today — not to protect anything, but to explain what a cipher is.",
+                                      "One special case survived into modern use: a shift of 13, known as [[rot13]]."
+                              ],
+                              "params": [
+                                      [
+                                              "Shift",
+                                              "How many places each letter moves. This is the key, and the only thing you need to read the message."
+                                      ]
+                              ]
+                      },
+                      "rot13": {
+                              "era": "The internet · 1980s",
+                              "how": [
+                                      "A [[caesar]] locked at 13. Since the alphabet has 26 letters, 13 is exactly half: applying ROT13 twice brings you back to the original.",
+                                      "In other words there is no “encrypt” and “decrypt” — it is the same action both ways.",
+                                      "It only touches letters. A phone number or a date passes through untouched, which is what gave rise to the other members of the family.",
+                                      "The name says it all: “ROT” for rotation, the number for the shift. But that number is never arbitrary — it is always exactly half of the alphabet involved, which is what makes the operation reversible in a single move.",
+                                      "So there are several, depending on what you want to scramble: [[rot5]] for the ten digits, [[rot13]] for the twenty-six letters, [[rot18]] for both together, and [[rot47]] for the ninety-four keyboard characters."
+                              ],
+                              "history": [
+                                      "It was never meant to protect anything, and nobody ever claimed otherwise.",
+                                      "On early internet forums it hid the punchline of a joke, the ending of a film, the answer to a riddle. The reader had to make a deliberate move to see it — the point was not to prevent, but to avoid spoiling by accident."
+                              ],
+                              "params": []
+                      },
+                      "rot47": {
+                              "era": "Modern · Unix culture",
+                              "how": [
+                                      "Like [[rot13]], but instead of touching only the 26 letters it shifts all 94 characters you can type: letters, digits, punctuation, symbols.",
+                                      "So a phone number or an email address gets scrambled too, where [[rot13]] would leave them perfectly readable.",
+                                      "The shift of 47 — half of 94 — makes it reversible in a single move, just like [[rot13]].",
+                                      "The name says it all: “ROT” for rotation, the number for the shift. But that number is never arbitrary — it is always exactly half of the alphabet involved, which is what makes the operation reversible in a single move.",
+                                      "So there are several, depending on what you want to scramble: [[rot5]] for the ten digits, [[rot13]] for the twenty-six letters, [[rot18]] for both together, and [[rot47]] for the ninety-four keyboard characters."
+                              ],
+                              "history": [
+                                      "A practical extension, born from noticing that [[rot13]] let everything that is not a letter through. In a world where passwords and addresses are full of digits, that was a real limit."
+                              ],
+                              "params": [
+                                      [
+                                              "Shift",
+                                              "47 by default, the only value that lets one setting do both directions. Any other value means remembering its opposite."
+                                      ]
+                              ]
+                      },
+                      "atbash": {
+                              "era": "Ancient Hebrew · around 600 BC",
+                              "how": [
+                                      "The alphabet is flipped like a mirror. A becomes Z, B becomes Y, C becomes X, and so on to the middle.",
+                                      "There is no key and no setting: there is only one way to apply it. And like a mirror, applying it twice gives the original back.",
+                                      "That is also its weakness: there is nothing to guess. Anyone who recognises the method already has everything."
+                              ],
+                              "history": [
+                                      "One of the oldest known methods. Its name comes from Hebrew: aleph-tav, beth-shin — first letter with last, second with second-to-last.",
+                                      "It appears in the Book of Jeremiah, where the city of Babel is written “Sheshach”. Scholars took a long time to realise this was not an unknown place, but Babel held up to a mirror.",
+                                      "Mathematically it is a special case of the [[affine]] cipher."
+                              ],
+                              "params": []
+                      },
+                      "affine": {
+                              "era": "Classical mathematics",
+                              "how": [
+                                      "Letters are numbered 0 to 25, then a small calculation is applied: multiply by one number, add another, keep the remainder after dividing by 26.",
+                                      "This does two things at once: it stretches the alphabet, then shifts it. The [[caesar]] cipher only does the second, and [[atbash]] is one precise case of it.",
+                                      "One catch: the multiplier cannot be just anything. If it shares a divisor with 26 — like 2 or 13 — two different letters end up in the same place, and even the recipient cannot read it. The tool therefore offers only the 12 values that work."
+                              ],
+                              "history": [
+                                      "This is not a cipher used by an empire or an army: it is a teaching exercise, the one that shows how modular arithmetic behaves.",
+                                      "With 12 multipliers and 26 additions there are 312 keys. That is twelve times more than the [[caesar]] cipher… and still absurdly few."
+                              ],
+                              "params": [
+                                      [
+                                              "Multiplier a",
+                                              "Stretches the alphabet. Only values compatible with 26 are offered; the others would make the message unreadable for everyone."
+                                      ],
+                                      [
+                                              "Addend b",
+                                              "Then shifts the result, exactly like a [[caesar]] cipher."
+                                      ]
+                              ]
+                      },
+                      "vigenere": {
+                              "era": "Bellaso, 1553 · misattributed to Vigenère",
+                              "how": [
+                                      "Instead of one shift, several are used, given by a password written repeatedly under the text.",
+                                      "If the key is LEMON, the first letter is shifted by L, the second by E, the third by M… then it starts again. So the same letter of the message does not always encrypt the same way.",
+                                      "That is what makes it far stronger than a [[caesar]] cipher: the letter E, so common, no longer sticks out as an obvious spike. Its weakness lies elsewhere — the key repeats, and that repetition eventually shows."
+                              ],
+                              "history": [
+                                      "Published by Giovan Battista Bellaso in 1553. Blaise de Vigenère, whose name stuck, described a stronger version thirty-three years later. History misassigned the credit and never corrected it.",
+                                      "For three centuries it was called “le chiffre indéchiffrable”. It served diplomats, armies, and the Confederacy during the American Civil War.",
+                                      "Charles Babbage broke it around 1854 without publishing; Friedrich Kasiski published the method in 1863. The idea: spot fragments that repeat in the ciphertext. The gap between two repetitions is almost always a multiple of the key length. Once that length is known, the text splits into several independent [[caesar]] ciphers, and each falls in a second."
+                              ],
+                              "params": [
+                                      [
+                                              "Key",
+                                              "The password. Its length matters more than its letters: that is what the analysis looks for first. Several keys can be tried, separated by commas."
+                                      ],
+                                      [
+                                              "Autokey",
+                                              "Instead of repeating the key, it is extended with the message itself. Nothing repeats any more, so Kasiski's method finds nothing. This tool cannot break it — and says so rather than pretending."
+                                      ]
+                              ],
+                              "diagram": "vigenere"
+                      },
+                      "beaufort": {
+                              "era": "19th century · Hagelin M-209 machine",
+                              "how": [
+                                      "Almost identical to [[vigenere]], but the calculation is reversed: instead of adding the key to the text, the text is subtracted from the key.",
+                                      "That detail changes everything in practice: the cipher becomes reversible in a single move. The same setting is used to write and to read."
+                              ],
+                              "history": [
+                                      "Attributed to Sir Francis Beaufort, the naval officer known for his wind scale.",
+                                      "That reversibility was not mathematical elegance, it was practical necessity. On a mechanical machine, a tired operator under pressure in a shelter could not get the direction wrong: there was no direction.",
+                                      "The Hagelin M-209, a three-kilo metal box American troops carried to the front in the Second World War, worked on this principle."
+                              ],
+                              "params": [
+                                      [
+                                              "Key",
+                                              "As with [[vigenere]]. Leave it empty and the tool finds it on its own: the analysis is the same, only the internal formula differs."
+                                      ]
+                              ]
+                      },
+                      "railfence": {
+                              "era": "Classical transposition",
+                              "how": [
+                                      "Here no letter is replaced. They are all kept; only their order changes.",
+                                      "The text is written in a zigzag across several lines — as if walking down and up a staircase — then read back line by line, left to right.",
+                                      "One important consequence: counting letters is useless. There are exactly as many E's as in the original. What gives this cipher away is not statistics, it is the small number of possible zigzags."
+                              ],
+                              "history": [
+                                      "This is called a transposition, as opposed to substitutions like the [[caesar]] cipher. The two families are broken in completely different ways.",
+                                      "Rail fence is the simplest of either world: few settings, therefore little security. It shows up mostly in treasure hunts and puzzles.",
+                                      "Its serious older sibling is [[columnar]] transposition."
+                              ],
+                              "params": [
+                                      [
+                                              "Rails",
+                                              "How many lines the zigzag spans. The more there are, the further apart the letters scatter."
+                                      ],
+                                      [
+                                              "Offset",
+                                              "Where in the zigzag the writing starts. Without this setting, only fences started at the top going down could be read — barely half the cases."
+                                      ]
+                              ],
+                              "diagram": "railfence"
+                      },
+                      "columnar": {
+                              "era": "First and Second World Wars",
+                              "how": [
+                                      "The text is written in even rows beneath a keyword, like a table. Then the table is read column by column, following the alphabetical order of the keyword's letters.",
+                                      "An important point: only the order of the letters matters, not the letters themselves. ZEBRA and ECBDA give exactly the same result, because in both cases the third column comes first, then the second, and so on.",
+                                      "Like [[railfence]], this is a transposition: every letter is still there, just shuffled."
+                              ],
+                              "history": [
+                                      "Heavily used in both world wars, often applied twice in a row — called double transposition — which made it solid enough for field messages.",
+                                      "Breaking it without the keyword means trying every possible order. A 5-letter key means 120 combinations. A 7-letter key already means 5,040. Each added letter multiplies the work, and it quickly becomes out of reach.",
+                                      "That is why this tool searches keys of 2 to 5 letters by default: beyond that, the wait would be felt on every keystroke."
+                              ],
+                              "params": [
+                                      [
+                                              "Key",
+                                              "The keyword. Its letters mean nothing in themselves; only their alphabetical ranking is used."
+                                      ],
+                                      [
+                                              "Key width",
+                                              "How many letters the searched key has. Past 5, the number of combinations explodes."
+                                      ]
+                              ],
+                              "diagram": "columnar"
+                      },
+                      "reverse": {
+                              "era": "—",
+                              "how": [
+                                      "The text is read from the end to the beginning. That is all.",
+                                      "It is not really a cipher: there is no key and no secret. Anyone works out what happened in a second."
+                              ],
+                              "history": [
+                                      "Its interest lies elsewhere: as a step in the middle of a chain. Placed between two other methods, it breaks up the regularities the next one would otherwise leave intact.",
+                                      "On its own, it stops nobody."
+                              ],
+                              "params": []
+                      },
+                      "base64": {
+                              "era": "Electronic mail · 1992",
+                              "how": [
+                                      "This is not encryption, and that matters: there is no key and no secret. Anyone can read it.",
+                                      "Its job is to translate any data — an image, a file — into ordinary letters and digits. Three bytes become four characters.",
+                                      "It is easy to spot: text with no spaces, mixing upper and lower case, sometimes ending in one or two equals signs."
+                              ],
+                              "history": [
+                                      "Born of a very concrete problem: early email systems could only carry plain text. There was no way to slip a photo in.",
+                                      "The solution was to disguise the file as text for the journey. It is everywhere today: images embedded in web pages, login tokens, attachments.",
+                                      "For the same idea in a different notation, see [[hex]]."
+                              ],
+                              "params": [
+                                      [
+                                              "URL safe",
+                                              "Two characters of the normal alphabet, + and /, have special meaning in a web address. The URL variant replaces them with - and _. This tool recognises both on its own."
+                                      ]
+                              ]
+                      },
+                      "hex": {
+                              "era": "Universal notation",
+                              "how": [
+                                      "Each character is written as two symbols, chosen from 0-9 then A-F. The word “Hi” is written 48 69.",
+                                      "No more secret than [[base64]]: it is another way of writing exactly the same thing. It is used because it is compact and easy to read for a human inspecting raw data.",
+                                      "Why 16 symbols? Because 16 fits exactly 4 bits, so two symbols make precisely one byte, with nothing left over."
+                              ],
+                              "history": [
+                                      "This is the everyday notation of anyone looking inside a file, a colour (#FF6600 is hexadecimal) or a digital fingerprint.",
+                                      "It was not invented to hide, but to make readable what otherwise is not."
+                              ],
+                              "params": [
+                                      [
+                                              "Separator",
+                                              "What sits between pairs. Reading is tolerant by default: spaces, commas, colons and dashes are ignored automatically."
+                                      ],
+                                      [
+                                              "Prefix",
+                                              "The 0x convention inherited from C, announcing “what follows is hexadecimal”. Removed on its own unless you impose another."
+                                      ]
+                              ]
+                      },
+                      "binary": {
+                              "era": "—",
+                              "how": [
+                                      "Each character is written with 0s and 1s — the way a computer actually stores it.",
+                                      "It is the most honest representation there is, and by far the bulkiest: eight characters for a single letter.",
+                                      "Like [[hex]] and [[base64]], it hides nothing at all."
+                              ],
+                              "history": [
+                                      "You meet it far more often in puzzles and games than in real transmissions. A machine has no need to spell out its bits: it already has them.",
+                                      "Its presence in a message is almost always a wink, not a protection."
+                              ],
+                              "params": [
+                                      [
+                                              "Word width",
+                                              "How many 0s and 1s make one character. 7 for old ASCII, 8 for a full byte. On a stream pasted without spaces, it is the only clue to where each character ends."
+                                      ],
+                                      [
+                                              "Separator",
+                                              "What separates the groups. A continuous stream with no separator is read too: the width is then deduced."
+                                      ]
+                              ]
+                      },
+                      "morse": {
+                              "era": "Morse and Vail · 1837-1844",
+                              "how": [
+                                      "Each letter becomes a series of dots and dashes. E, the most common letter in English, is a single dot. Q, far rarer, takes four signals.",
+                                      "This is not a cipher: it hides nothing, it carries. Any trained operator reads a Morse message as fast as plain text.",
+                                      "Capitals and punctuation disappear along the way. Once converted, nothing can bring them back."
+                              ],
+                              "history": [
+                                      "Designed for the electric telegraph, where a single wire could do only two things: let current through, or not. Everything had to be expressed in two durations, one short and one long.",
+                                      "That physical constraint explains the code's most elegant idea: give the shortest signals to the most frequent letters, to shorten messages. It is the same principle as file compression, a century before computing.",
+                                      "It outlived the telegraph by more than a hundred years, and remained the maritime distress standard until 1999."
+                              ],
+                              "params": [
+                                      [
+                                              "Separator",
+                                              "What separates words. No convention ever settled: slash, pipe or double space are all accepted."
+                                      ],
+                                      [
+                                              "Letter sep.",
+                                              "What separates letters inside a word. A single space, by convention."
+                                      ]
+                              ]
+                      },
+                      "rot5": {
+                              "era": "ROT family",
+                              "how": [
+                                      "The same idea as [[rot13]], but applied to digits instead of letters. 0 becomes 5, 1 becomes 6, and so on, wrapping round after 9.",
+                                      "Five is half of ten: like every ROT, it is therefore its own inverse.",
+                                      "Letters are left completely alone. On its own it is almost never used — its point is to be combined.",
+                                      "The name says it all: “ROT” for rotation, the number for the shift. But that number is never arbitrary — it is always exactly half of the alphabet involved, which is what makes the operation reversible in a single move.",
+                                      "So there are several, depending on what you want to scramble: [[rot5]] for the ten digits, [[rot13]] for the twenty-six letters, [[rot18]] for both together, and [[rot47]] for the ninety-four keyboard characters."
+                              ],
+                              "history": [
+                                      "It has no history of its own: it is a spare part, born of the need to complete [[rot13]] where that one does nothing.",
+                                      "You mostly meet it inside [[rot18]], which bolts it together with [[rot13]]."
+                              ],
+                              "params": []
+                      },
+                      "rot18": {
+                              "era": "ROT family",
+                              "how": [
+                                      "[[rot13]] and [[rot5]] applied at the same time: letters rotate by 13, digits by 5.",
+                                      "It fills the gap left by [[rot13]] alone, which leaves numbers perfectly readable. With ROT18 a phone number gets scrambled too.",
+                                      "Since both halves are each their own inverse, the whole thing is too.",
+                                      "The name says it all: “ROT” for rotation, the number for the shift. But that number is never arbitrary — it is always exactly half of the alphabet involved, which is what makes the operation reversible in a single move.",
+                                      "So there are several, depending on what you want to scramble: [[rot5]] for the ten digits, [[rot13]] for the twenty-six letters, [[rot18]] for both together, and [[rot47]] for the ninety-four keyboard characters."
+                              ],
+                              "history": [
+                                      "A practical assembly rather than an invention. Its name comes from a slightly lazy sum: 13 plus 5.",
+                                      "One amusing consequence: if your text contains no digits at all, ROT18 gives exactly the same result as [[rot13]]. This tool then cannot tell them apart — and will say so rather than choose for you."
+                              ],
+                              "params": []
+                      }
+              },
+              "fr": {
+                      "caesar": {
+                              "era": "Rome antique · 1er siècle av. J.-C.",
+                              "how": [
+                                      "On remplace chaque lettre par une autre située un peu plus loin dans l'alphabet, toujours du même nombre de rangs. Avec un décalage de 3 : A devient D, B devient E, C devient F. Arrivé au bout, on repart au début — X devient A.",
+                                      "Les espaces, la ponctuation et les majuscules ne bougent pas. C'est justement le problème : la silhouette du message reste visible. Un mot de trois lettres reste un mot de trois lettres, et en anglais ou en français, il y a de fortes chances que ce soit « the » ou « les ».",
+                                      "Il n'existe que 25 décalages possibles. Un ordinateur les essaie tous instantanément, puis regarde lequel donne du vrai texte. C'est exactement ce que fait cet outil."
+                              ],
+                              "history": [
+                                      "Suétone raconte que Jules César utilisait un décalage de 3 pour ses messages militaires. À l'époque, cela suffisait : la plupart de ses ennemis ne savaient tout simplement pas lire.",
+                                      "C'est le plus vieux chiffrement que tout le monde connaît, et sans doute le premier qu'on apprend. Il sert encore aujourd'hui — pas pour protéger quoi que ce soit, mais pour expliquer ce qu'est un chiffrement.",
+                                      "Un cas particulier a survécu jusqu'à nous : le décalage de 13, appelé [[rot13]]."
+                              ],
+                              "params": [
+                                      [
+                                              "Décalage",
+                                              "De combien de rangs chaque lettre avance. C'est la clé, et la seule chose à connaître pour lire le message."
+                                      ]
+                              ]
+                      },
+                      "rot13": {
+                              "era": "Internet · années 1980",
+                              "how": [
+                                      "Un [[caesar]] bloqué sur 13. Comme l'alphabet compte 26 lettres, 13 en est exactement la moitié : appliquer ROT13 deux fois ramène au texte de départ.",
+                                      "Autrement dit, il n'y a pas de « chiffrer » et « déchiffrer » — c'est le même geste dans les deux sens.",
+                                      "Il ne touche que les lettres. Un numéro de téléphone ou une date traversent intacts, ce qui a donné naissance aux autres membres de la famille.",
+                                      "Le nom dit tout : « ROT » pour rotation, le nombre pour le décalage. Mais ce nombre n'est jamais choisi au hasard — c'est toujours la moitié exacte de l'alphabet concerné, ce qui rend l'opération réversible d'un seul geste.",
+                                      "Il en existe donc plusieurs, selon ce qu'on veut brouiller : [[rot5]] pour les dix chiffres, [[rot13]] pour les vingt-six lettres, [[rot18]] pour les deux ensemble, et [[rot47]] pour les quatre-vingt-quatorze caractères du clavier."
+                              ],
+                              "history": [
+                                      "Il n'a jamais servi à protéger quoi que ce soit, et personne n'a jamais prétendu le contraire.",
+                                      "Sur les forums des débuts d'Internet, on l'utilisait pour cacher la chute d'une blague, la fin d'un film ou la réponse à une énigme. Le lecteur devait faire un geste volontaire pour lire — le but n'était pas d'empêcher, mais d'éviter de gâcher par accident."
+                              ],
+                              "params": []
+                      },
+                      "rot47": {
+                              "era": "Moderne · monde Unix",
+                              "how": [
+                                      "Comme [[rot13]], mais au lieu de ne toucher qu'aux 26 lettres, il décale les 94 caractères que l'on peut taper au clavier : lettres, chiffres, ponctuation, symboles.",
+                                      "Résultat : un numéro de téléphone ou une adresse e-mail sont brouillés aussi, alors que [[rot13]] les laisserait parfaitement lisibles.",
+                                      "Le décalage 47 — la moitié de 94 — le rend lui aussi réversible d'un seul geste.",
+                                      "Le nom dit tout : « ROT » pour rotation, le nombre pour le décalage. Mais ce nombre n'est jamais choisi au hasard — c'est toujours la moitié exacte de l'alphabet concerné, ce qui rend l'opération réversible d'un seul geste.",
+                                      "Il en existe donc plusieurs, selon ce qu'on veut brouiller : [[rot5]] pour les dix chiffres, [[rot13]] pour les vingt-six lettres, [[rot18]] pour les deux ensemble, et [[rot47]] pour les quatre-vingt-quatorze caractères du clavier."
+                              ],
+                              "history": [
+                                      "Une extension pratique, née du constat que [[rot13]] laissait passer tout ce qui n'est pas une lettre. Dans un monde où les mots de passe et les adresses contiennent des chiffres, c'était une vraie limite."
+                              ],
+                              "params": [
+                                      [
+                                              "Décalage",
+                                              "47 par défaut, la seule valeur qui permet de faire l'aller et le retour avec le même réglage. Une autre valeur oblige à retenir son opposé."
+                                      ]
+                              ]
+                      },
+                      "atbash": {
+                              "era": "Hébreu ancien · vers 600 av. J.-C.",
+                              "how": [
+                                      "On retourne l'alphabet comme un miroir. A devient Z, B devient Y, C devient X, et ainsi jusqu'au milieu.",
+                                      "Il n'y a aucune clé, aucun réglage : il n'existe qu'une seule façon de l'appliquer. Et comme un miroir, l'appliquer deux fois rend le texte d'origine.",
+                                      "C'est aussi ce qui le rend faible : il n'y a rien à deviner. Qui reconnaît la méthode a déjà tout."
+                              ],
+                              "history": [
+                                      "L'un des plus anciens procédés connus. Son nom vient de l'hébreu : aleph-tav, beth-shin — la première lettre avec la dernière, la deuxième avec l'avant-dernière.",
+                                      "On le trouve dans le Livre de Jérémie, où la ville de Babel est écrite « Sheshach ». Les érudits ont mis du temps à comprendre que ce n'était pas un lieu inconnu, mais Babel passée au miroir.",
+                                      "Mathématiquement, c'est un cas particulier de l'[[affine]]."
+                              ],
+                              "params": []
+                      },
+                      "affine": {
+                              "era": "Mathématiques classiques",
+                              "how": [
+                                      "On numérote les lettres de 0 à 25, puis on applique un petit calcul : on multiplie par un nombre, on en ajoute un autre, et on garde le reste de la division par 26.",
+                                      "Cela revient à faire deux choses d'un coup : étirer l'alphabet, puis le décaler. Le [[caesar]] n'en fait qu'une (le décalage), l'[[atbash]] en est un cas précis.",
+                                      "Attention : le multiplicateur ne peut pas être n'importe lequel. S'il partage un diviseur avec 26 — comme 2 ou 13 — deux lettres différentes finissent au même endroit, et même le destinataire ne peut plus lire. L'outil ne propose donc que les 12 valeurs qui marchent."
+                              ],
+                              "history": [
+                                      "Ce n'est pas un chiffrement historique employé par un empire ou une armée : c'est un exercice, celui qui sert à montrer comment l'arithmétique modulaire fonctionne.",
+                                      "Avec 12 multiplicateurs et 26 additions, il existe 312 clés. C'est douze fois plus que le [[caesar]]… et toujours ridiculement peu."
+                              ],
+                              "params": [
+                                      [
+                                              "Multiplicateur a",
+                                              "Étire l'alphabet. Seules les valeurs compatibles avec 26 sont proposées, les autres rendraient le message illisible pour tout le monde."
+                                      ],
+                                      [
+                                              "Addition b",
+                                              "Décale ensuite le résultat, exactement comme un [[caesar]]."
+                                      ]
+                              ]
+                      },
+                      "vigenere": {
+                              "era": "Bellaso, 1553 · attribué à tort à Vigenère",
+                              "how": [
+                                      "Au lieu d'un décalage unique, on en utilise plusieurs, donnés par un mot de passe qu'on répète sous le texte.",
+                                      "Si la clé est LEMON, la première lettre est décalée comme L, la deuxième comme E, la troisième comme M… puis on recommence. Une même lettre du message ne se chiffre donc pas toujours pareil.",
+                                      "C'est ce qui le rend bien plus solide qu'un [[caesar]] : la lettre E, si fréquente, ne ressort plus comme un pic évident. Sa faiblesse est ailleurs — la clé se répète, et cette répétition finit par se voir."
+                              ],
+                              "history": [
+                                      "Publié par Giovan Battista Bellaso en 1553. Blaise de Vigenère, dont le nom est resté, en a décrit une version plus solide trente-trois ans plus tard. L'histoire a mal attribué le crédit et ne l'a jamais corrigé.",
+                                      "Pendant trois siècles on l'a appelé « le chiffre indéchiffrable ». Il a servi aux diplomates, aux armées, et jusqu'aux Confédérés pendant la guerre de Sécession.",
+                                      "Charles Babbage l'a cassé vers 1854 sans rien publier ; Friedrich Kasiski a publié la méthode en 1863. L'idée : repérer des fragments qui se répètent dans le texte chiffré. L'écart entre deux répétitions est presque toujours un multiple de la longueur de la clé. Une fois cette longueur connue, le texte se découpe en plusieurs [[caesar]] indépendants, et chacun tombe en une seconde."
+                              ],
+                              "params": [
+                                      [
+                                              "Clé",
+                                              "Le mot de passe. Sa longueur compte plus que ses lettres : c'est elle que l'analyse cherche en premier. Plusieurs clés peuvent être essayées, séparées par des virgules."
+                                      ],
+                                      [
+                                              "Autokey",
+                                              "Au lieu de répéter la clé, on la prolonge avec le texte lui-même. Plus rien ne se répète, donc la méthode de Kasiski ne trouve rien. Cet outil ne sait pas le casser — il le dit plutôt que de faire semblant."
+                                      ]
+                              ],
+                              "diagram": "vigenere"
+                      },
+                      "beaufort": {
+                              "era": "XIXe siècle · machine Hagelin M-209",
+                              "how": [
+                                      "Presque identique à [[vigenere]], mais le calcul est inversé : au lieu d'ajouter la clé au texte, on soustrait le texte de la clé.",
+                                      "Ce détail change tout à l'usage : le chiffrement devient réversible d'un seul geste. Le même réglage sert à écrire et à lire."
+                              ],
+                              "history": [
+                                      "Attribué à Sir Francis Beaufort, l'officier de marine connu pour son échelle des vents.",
+                                      "Cette réversibilité n'était pas une élégance mathématique, c'était une nécessité pratique. Sur une machine mécanique, un opérateur fatigué, sous pression, dans un abri, ne pouvait pas se tromper de sens : il n'y avait pas de sens.",
+                                      "La Hagelin M-209, une boîte métallique de trois kilos que les troupes américaines emportaient au front pendant la Seconde Guerre mondiale, fonctionnait sur ce principe."
+                              ],
+                              "params": [
+                                      [
+                                              "Clé",
+                                              "Comme pour [[vigenere]]. Si tu la laisses vide, l'outil la retrouve seul : la méthode d'analyse est la même, seule la formule interne change."
+                                      ]
+                              ]
+                      },
+                      "railfence": {
+                              "era": "Transposition classique",
+                              "how": [
+                                      "Ici, on ne remplace aucune lettre. On les garde toutes, on change seulement leur ordre.",
+                                      "On écrit le texte en zigzag sur plusieurs lignes — comme si on descendait et remontait un escalier — puis on relit ligne par ligne, de gauche à droite.",
+                                      "Conséquence importante : compter les lettres ne sert à rien. Il y a toujours autant de E que dans le texte d'origine. Ce qui trahit ce chiffrement, ce n'est pas la statistique, c'est le petit nombre de zigzags possibles."
+                              ],
+                              "history": [
+                                      "On appelle cela une transposition, par opposition aux substitutions comme le [[caesar]]. Les deux familles se cassent de façons complètement différentes.",
+                                      "Le rail fence est le plus simple des deux mondes : peu de réglages, donc peu de sécurité. Il apparaît surtout dans les jeux de piste et les énigmes.",
+                                      "Sa grande sœur sérieuse, c'est la transposition par [[columnar]]."
+                              ],
+                              "params": [
+                                      [
+                                              "Rails",
+                                              "Le nombre de lignes du zigzag. Plus il y en a, plus les lettres s'éparpillent loin les unes des autres."
+                                      ],
+                                      [
+                                              "Décalage",
+                                              "À quel endroit du zigzag on commence à écrire. Sans ce réglage, on ne saurait lire que les zigzags commencés en haut en descendant — soit la moitié des cas seulement."
+                                      ]
+                              ],
+                              "diagram": "railfence"
+                      },
+                      "columnar": {
+                              "era": "Première et Seconde Guerres mondiales",
+                              "how": [
+                                      "On écrit le texte en lignes régulières sous un mot-clé, comme dans un tableau. Puis on relit le tableau colonne par colonne, dans l'ordre alphabétique des lettres du mot-clé.",
+                                      "Point important : seul l'ordre des lettres compte, pas les lettres elles-mêmes. ZEBRA et ECBDA donnent exactement le même résultat, parce que dans les deux cas la troisième colonne vient en premier, puis la deuxième, etc.",
+                                      "Comme le [[railfence]], c'est une transposition : les lettres sont toutes là, mélangées."
+                              ],
+                              "history": [
+                                      "Très utilisée pendant les deux guerres mondiales, souvent appliquée deux fois de suite — on appelait cela la double transposition — ce qui la rendait assez solide pour les messages de terrain.",
+                                      "Pour la casser sans le mot-clé, il faut essayer tous les ordres possibles. Une clé de 5 lettres, cela fait 120 combinaisons. Une clé de 7, déjà 5 040. Chaque lettre ajoutée multiplie le travail, et cela devient vite hors de portée.",
+                                      "C'est pourquoi cet outil cherche par défaut les clés de 2 à 5 lettres : au-delà, l'attente se ferait sentir à chaque frappe."
+                              ],
+                              "params": [
+                                      [
+                                              "Clé",
+                                              "Le mot-clé. Ses lettres n'ont aucune importance en elles-mêmes, seul leur classement alphabétique est utilisé."
+                                      ],
+                                      [
+                                              "Largeur de clé",
+                                              "Combien de lettres compte la clé cherchée. Au-delà de 5, le nombre de combinaisons explose."
+                                      ]
+                              ],
+                              "diagram": "columnar"
+                      },
+                      "reverse": {
+                              "era": "—",
+                              "how": [
+                                      "On lit le texte de la fin vers le début. C'est tout.",
+                                      "Ce n'est pas vraiment un chiffrement : il n'y a ni clé ni secret. N'importe qui devine en une seconde ce qui s'est passé."
+                              ],
+                              "history": [
+                                      "Son intérêt est ailleurs : comme étape au milieu d'une chaîne. Placé entre deux autres méthodes, il casse les régularités que la suivante laisserait sinon intactes.",
+                                      "Seul, il n'arrête personne."
+                              ],
+                              "params": []
+                      },
+                      "base64": {
+                              "era": "Courrier électronique · 1992",
+                              "how": [
+                                      "Ce n'est pas du chiffrement, et c'est important de le savoir : il n'y a aucune clé, aucun secret. N'importe qui peut le lire.",
+                                      "Son rôle est de traduire n'importe quelle donnée — une image, un fichier — en une suite de lettres et de chiffres ordinaires. Trois octets deviennent quatre caractères.",
+                                      "On le reconnaît facilement : du texte sans espaces, mélangeant majuscules et minuscules, qui se termine parfois par un ou deux signes égal."
+                              ],
+                              "history": [
+                                      "Né d'un problème très concret : les premiers systèmes de courrier électronique ne savaient transporter que du texte simple. Impossible d'y glisser une photo.",
+                                      "La solution a été de déguiser le fichier en texte le temps du voyage. On le retrouve partout aujourd'hui : images intégrées dans les pages web, jetons de connexion, pièces jointes.",
+                                      "Pour la même idée avec une écriture différente, voir l'[[hex]]."
+                              ],
+                              "params": [
+                                      [
+                                              "Variante URL",
+                                              "Deux caractères de l'alphabet normal, + et /, ont un sens spécial dans une adresse web. La variante URL les remplace par - et _. Cet outil reconnaît les deux tout seul."
+                                      ]
+                              ]
+                      },
+                      "hex": {
+                              "era": "Notation universelle",
+                              "how": [
+                                      "Chaque caractère est écrit sous la forme de deux symboles, choisis parmi 0-9 puis A-F. Le mot « Hi » s'écrit 48 69.",
+                                      "Pas plus secret que le [[base64]] : c'est une autre façon d'écrire exactement la même chose. On l'utilise parce qu'elle est compacte et facile à lire pour un humain qui inspecte des données brutes.",
+                                      "Pourquoi 16 symboles ? Parce que 16 correspond exactement à 4 bits, donc deux symboles font pile un octet, sans reste ni bricolage."
+                              ],
+                              "history": [
+                                      "C'est la notation quotidienne de qui regarde à l'intérieur d'un fichier, d'une couleur (#FF6600 est de l'hexadécimal) ou d'une empreinte numérique.",
+                                      "Elle n'a pas été inventée pour cacher, mais pour rendre lisible ce qui ne l'est pas."
+                              ],
+                              "params": [
+                                      [
+                                              "Séparateur",
+                                              "Ce qui se place entre les paires. La lecture est tolérante par défaut : espaces, virgules, deux-points et tirets sont ignorés automatiquement."
+                                      ],
+                                      [
+                                              "Préfixe",
+                                              "La convention 0x, héritée du langage C, qui annonce « ce qui suit est de l'hexadécimal ». Retirée toute seule sauf si tu en imposes une autre."
+                                      ]
+                              ]
+                      },
+                      "binary": {
+                              "era": "—",
+                              "how": [
+                                      "Chaque caractère est écrit avec des 0 et des 1 — la façon dont un ordinateur le stocke réellement.",
+                                      "C'est la représentation la plus honnête qui soit, et de loin la plus encombrante : huit caractères pour une seule lettre.",
+                                      "Comme l'[[hex]] et le [[base64]], cela ne cache rien du tout."
+                              ],
+                              "history": [
+                                      "On le croise beaucoup plus souvent dans les énigmes et les jeux que dans de vraies transmissions. Une machine n'a aucun besoin d'écrire ses bits en toutes lettres : elle les a déjà.",
+                                      "Sa présence dans un message est presque toujours un clin d'œil, pas une protection."
+                              ],
+                              "params": [
+                                      [
+                                              "Largeur du mot",
+                                              "Combien de 0 et de 1 pour un caractère. 7 pour l'ancien ASCII, 8 pour un octet complet. Sur un flux collé sans espaces, c'est le seul repère qui indique où finit chaque caractère."
+                                      ],
+                                      [
+                                              "Séparateur",
+                                              "Ce qui sépare les groupes. Un flux continu sans aucun séparateur est lu aussi : la largeur est alors déduite."
+                                      ]
+                              ]
+                      },
+                      "morse": {
+                              "era": "Morse et Vail · 1837-1844",
+                              "how": [
+                                      "Chaque lettre devient une suite de points et de traits. E, la lettre la plus fréquente en anglais, ne vaut qu'un seul point. Q, bien plus rare, en demande quatre.",
+                                      "Ce n'est pas un chiffrement : il ne cache rien, il transporte. N'importe quel opérateur formé lit un message en morse aussi vite qu'un texte.",
+                                      "Les majuscules et la ponctuation disparaissent au passage. Une fois converti, rien ne permet de les retrouver."
+                              ],
+                              "history": [
+                                      "Conçu pour le télégraphe électrique, où un seul fil ne pouvait faire que deux choses : laisser passer le courant, ou pas. Tout devait donc s'exprimer en deux durées, une courte et une longue.",
+                                      "Cette contrainte matérielle explique l'idée la plus élégante du code : donner les signaux les plus courts aux lettres les plus fréquentes, pour raccourcir les messages. C'est le même principe que la compression de fichiers, un siècle avant l'informatique.",
+                                      "Il a survécu au télégraphe de plus de cent ans, et est resté la norme des appels de détresse en mer jusqu'en 1999."
+                              ],
+                              "params": [
+                                      [
+                                              "Séparateur",
+                                              "Ce qui sépare les mots. Aucune convention ne s'est jamais imposée : barre oblique, barre verticale ou double espace sont tous acceptés."
+                                      ],
+                                      [
+                                              "Sép. lettres",
+                                              "Ce qui sépare les lettres à l'intérieur d'un mot. Une simple espace, par convention."
+                                      ]
+                              ]
+                      },
+                      "rot5": {
+                              "era": "Famille ROT",
+                              "how": [
+                                      "La même idée que [[rot13]], mais appliquée aux chiffres au lieu des lettres. 0 devient 5, 1 devient 6, et ainsi de suite en repartant à zéro après 9.",
+                                      "Cinq est la moitié de dix : comme tous les ROT, il est donc sa propre inverse.",
+                                      "Les lettres ne bougent pas du tout. Seul, il ne sert presque jamais — son intérêt est d'être combiné.",
+                                      "Le nom dit tout : « ROT » pour rotation, le nombre pour le décalage. Mais ce nombre n'est jamais choisi au hasard — c'est toujours la moitié exacte de l'alphabet concerné, ce qui rend l'opération réversible d'un seul geste.",
+                                      "Il en existe donc plusieurs, selon ce qu'on veut brouiller : [[rot5]] pour les dix chiffres, [[rot13]] pour les vingt-six lettres, [[rot18]] pour les deux ensemble, et [[rot47]] pour les quatre-vingt-quatorze caractères du clavier."
+                              ],
+                              "history": [
+                                      "Il n'a pas d'histoire propre : c'est une pièce détachée, née du besoin de compléter [[rot13]] là où celui-ci ne fait rien.",
+                                      "On le rencontre surtout à l'intérieur de [[rot18]], qui l'assemble avec [[rot13]]."
+                              ],
+                              "params": []
+                      },
+                      "rot18": {
+                              "era": "Famille ROT",
+                              "how": [
+                                      "[[rot13]] et [[rot5]] appliqués en même temps : les lettres tournent de 13, les chiffres de 5.",
+                                      "Il comble le trou laissé par [[rot13]] seul, qui laisse les nombres parfaitement lisibles. Avec ROT18, un numéro de téléphone est brouillé lui aussi.",
+                                      "Comme ses deux moitiés sont chacune leur propre inverse, l'ensemble l'est aussi.",
+                                      "Le nom dit tout : « ROT » pour rotation, le nombre pour le décalage. Mais ce nombre n'est jamais choisi au hasard — c'est toujours la moitié exacte de l'alphabet concerné, ce qui rend l'opération réversible d'un seul geste.",
+                                      "Il en existe donc plusieurs, selon ce qu'on veut brouiller : [[rot5]] pour les dix chiffres, [[rot13]] pour les vingt-six lettres, [[rot18]] pour les deux ensemble, et [[rot47]] pour les quatre-vingt-quatorze caractères du clavier."
+                              ],
+                              "history": [
+                                      "Un assemblage pratique plutôt qu'une invention. Son nom vient d'une addition un peu paresseuse : 13 plus 5.",
+                                      "Attention à une conséquence amusante : si ton texte ne contient aucun chiffre, ROT18 donne exactement le même résultat que [[rot13]]. Cet outil ne peut alors pas les distinguer — et te le dira plutôt que de choisir pour toi."
+                              ],
+                              "params": []
+                      }
+              }
+      };
+
+      /* Scope of each method: what it touches and what it lets through. This is
+         the trap one otherwise discovers the hard way — ROT13 on a phone number
+         does nothing at all. */
+      const SCOPE = {
+              "fr": {
+                      "caesar": "Lettres seulement. Chiffres, ponctuation et espaces traversent intacts.",
+                      "rot13": "Lettres seulement. Un numéro de téléphone reste parfaitement lisible.",
+                      "rot5": "Chiffres seulement (0 à 9). Les lettres ne bougent pas du tout.",
+                      "rot18": "Lettres et chiffres. La ponctuation traverse intacte.",
+                      "rot47": "Tout le clavier : lettres, chiffres, ponctuation et symboles.",
+                      "atbash": "Lettres seulement. Aucune clé — une seule façon de l'appliquer.",
+                      "affine": "Lettres seulement. Le multiplicateur doit être compatible avec 26.",
+                      "vigenere": "Lettres seulement. Exige une clé ; retrouvée seule si elle est courte.",
+                      "beaufort": "Lettres seulement. Sa propre inverse : un seul réglage dans les deux sens.",
+                      "railfence": "Tous les caractères, espaces compris — leur position compte.",
+                      "columnar": "Tous les caractères. Du rembourrage est ajouté si la grille tombe incomplète.",
+                      "reverse": "Tous les caractères. Aucune clé, aucun secret.",
+                      "base64": "Toute donnée. Ce n'est pas du chiffrement : rien à deviner.",
+                      "hex": "Toute donnée. Ce n'est pas du chiffrement, juste une autre écriture.",
+                      "binary": "Toute donnée. Ce n'est pas du chiffrement : huit signes par lettre.",
+                      "morse": "Lettres et chiffres. Majuscules et ponctuation sont perdues."
+              },
+              "en": {
+                      "caesar": "Letters only. Digits, punctuation and spaces pass through untouched.",
+                      "rot13": "Letters only. A phone number stays perfectly readable.",
+                      "rot5": "Digits only (0 to 9). Letters are not touched at all.",
+                      "rot18": "Letters and digits. Punctuation passes through untouched.",
+                      "rot47": "The whole keyboard: letters, digits, punctuation and symbols.",
+                      "atbash": "Letters only. No key — there is only one way to apply it.",
+                      "affine": "Letters only. The multiplier must be compatible with 26.",
+                      "vigenere": "Letters only. Needs a key; recovered on its own if it is short.",
+                      "beaufort": "Letters only. Its own inverse: one setting works both ways.",
+                      "railfence": "Every character, spaces included — their position matters.",
+                      "columnar": "Every character. Padding is added only if the grid comes out incomplete.",
+                      "reverse": "Every character. No key, no secret.",
+                      "base64": "Any data. This is not encryption: there is nothing to guess.",
+                      "hex": "Any data. Not encryption either, just another notation.",
+                      "binary": "Any data. Not encryption: eight signs per letter.",
+                      "morse": "Letters and digits. Capitals and punctuation are lost."
+              }
+      };
+
+      let lang = "en";
+      let mode = "decrypt";
+      const t = (key) => TEXT[lang][key];
+      const fill = (template, data) =>
+        String(template).replace(/\{(\w+)\}/g, (_, k) => (data[k] ?? ""));
+      const range = (from, to) =>
+        Array.from({ length: to - from + 1 }, (_, i) => from + i);
+
+      /* Only multipliers coprime with 26 are invertible; any other would map two
+         different letters onto the same result. Offering them as a list avoids
+         discovering the constraint through an error. */
+      const AFFINE_A = [3, 5, 7, 9, 11, 15, 17, 19, 21, 23, 25];
+
+      /* `maxUses` bounds how many steps of one method a chain may contain. Two
+         distinct reasons, best not confused:
+
+         — **involution**. Atbash, Reversed and ROT13 are their own inverse:
+           applying them twice returns the original text. A second step
+           encrypts nothing, it undoes the first. The bound is mathematical,
+           not precautionary.
+
+         — **the number of distinct settings**. Base64 has only two forms,
+           standard and URL. A third pass makes the text no more obscure: it
+           grows it by a third and adds nothing.
+
+         Methods with a free-form key — Vigenere, columnar, hex, morse — have no
+         bound of their own: their setting space is unbounded. Only the global
+         limit applies to them. */
+      const PARAMS = {
+        caesar:    { fields: ["shift"], defaults: { shift: 3 }, maxUses: 25 },
+        rot13:     { fields: [], maxUses: 1 },
+        rot5:      { fields: [], maxUses: 1 },
+        rot18:     { fields: [], maxUses: 1 },
+        rot47:     { fields: ["shift"], defaults: { shift: 47 }, maxUses: 93 },
+        atbash:    { fields: [], maxUses: 1 },
+        affine:    { fields: ["a", "b"], maxUses: 286 },
+        vigenere:  { fields: ["key"], flags: ["autokey"] },
+        beaufort:  { fields: ["key"] },
+        railfence: { fields: ["rails", "offset"] },
+        columnar:  { fields: ["key"] },
+        reverse:   { fields: [], maxUses: 1 },
+        base64:    { fields: [], flags: ["urlsafe"], maxUses: 2 },
+        hex:       { fields: ["sep", "prefix"], flags: ["upper"], defaults: { sep: "" } },
+        binary:    { fields: ["sep"], defaults: { sep: " " } },
+        morse:     { fields: ["sep"], defaults: { sep: " / " }, rename: { sep: "word_sep" } },
+      };
+
+      /* Global ceiling. Each step is one more Python call, and the text grows by
+         a third with every base64 pass: ten passes are enough to produce
+         megabytes the browser will struggle to display. */
+      const MAX_STEPS = 10;
+
+      const usesOf = (method) => steps.filter((s) => s.method === method).length;
+      const capOf = (method) => (PARAMS[method] || {}).maxUses ?? Infinity;
+      const canAdd = (method) => usesOf(method) < capOf(method);
+
+      /* `values` enumerates the possible settings. `group` collects them into
+         ranges when the list is too long — ROT47 has 93 shifts. `notable`
+         isolates the canonical values. `text` remains only for what cannot be
+         enumerated: a Vigenere key is any word at all. */
+      /* `note` explains the absence of a setting. Showing nothing suggested an
+         oversight: Morse *does* have a separator, the decoder simply recognises
+         it on its own, whether slash, pipe or double space. Saying so beats a
+         blank. */
+      const SEARCHABLE = [
+        // 13 sits apart at the head of the shifts: that is ROT13, the only one
+        // with a name of its own. The engine labels the candidate "ROT13" when
+        // it lands there, so the chip may as well say the same.
+        { id: "caesar", values: { shift: range(1, 25) }, notable: { shift: [13] } },
+        { id: "atbash", note: "noSetting" },
+        { id: "affine", values: { a: AFFINE_A, b: range(0, 25) } },
+        { id: "vigenere", text: ["key"], flags: ["autokey"] },
+        { id: "beaufort", text: ["key"], note: "autoBeaufort" },
+        { id: "rot5", note: "noSetting" },
+        { id: "rot18", note: "noSetting" },
+        { id: "rot47", values: { shift: range(1, 93) }, group: { shift: 10 }, notable: { shift: [47] } },
+        { id: "railfence", values: { rails: range(2, 7), offset: range(0, 11) } },
+        { id: "columnar", values: { width: range(2, 8) }, text: ["key"], note: "autoColumnar" },
+        { id: "reverse", note: "noSetting" },
+        { id: "base64", note: "autoBase64" },
+        { id: "hex", text: ["sep", "prefix"], note: "autoHex" },
+        { id: "binary", values: { bits: [7, 8] }, text: ["sep"], note: "autoBinary" },
+        {
+          id: "morse",
+          text: ["sep", "letterSep"],
+          rename: { sep: "word_sep", letterSep: "letter_sep" },
+          note: "autoMorse",
+        },
+      ];
+
+      const SPEC = Object.fromEntries(SEARCHABLE.map((entry) => [entry.id, entry]));
+
+      /* Only the key accepts several comma-separated values. A separator is
+         taken literally: splitting on commas would make a comma separator
+         disappear, and that is a perfectly legitimate one. */
+      const MULTI_FIELDS = new Set(["key"]);
+
+      /* The technical bank does not add a language: it extends every language
+         already loaded. Terms like "commit", "kg" or "frontend" genuinely cross
+         languages. */
+      const BANKS = [
+        { code: "es", label: "Español" },
+        { code: "de", label: "Deutsch" },
+        { code: "it", label: "Italiano" },
+        { code: "universal", label: "⚙ Tech" },
+      ];
+
+      const filterState = new Set();
+      const pins = {};
+      const freeText = {};
+      const loadedBanks = new Set();
+
+      const pinSet = (cipher, field) => {
+        pins[cipher] = pins[cipher] || {};
+        pins[cipher][field] = pins[cipher][field] || new Set();
+        return pins[cipher][field];
+      };
+      const labelOf = (field) => t("p" + field[0].toUpperCase() + field.slice(1));
+
+      /* ══ Decryption settings ══ */
+      function buildFilters() {
+        $("filters").innerHTML = SEARCHABLE.map(
+          ({ id }) =>
+            `<span class="chip-pair" data-tip="${escapeHtml((SCOPE[lang] || {})[id] || "")}">` +
+            `<button class="chip chip-method" data-cipher="${id}" ` +
+            `title="${escapeHtml((SCOPE[lang] || {})[id] || "")}" ` +
+            `aria-pressed="${filterState.has(id)}">${escapeHtml(t("ciphers")[id])}</button>` +
+            `<button class="info-btn" data-info="${id}" ` +
+            `aria-label="${escapeHtml(fill(t("aboutCipher"), { name: t("ciphers")[id] }))}">i</button></span>`
+        ).join("");
+        document.querySelectorAll("#filters button").forEach((button) => {
+          button.onclick = () => {
+            const name = button.dataset.cipher;
+            filterState.has(name) ? filterState.delete(name) : filterState.add(name);
+            button.setAttribute("aria-pressed", String(filterState.has(name)));
+            buildPins();
+            bindInfo();
+            schedule(0);
+          };
+        });
+      }
+
+      function buildPins() {
+        // Every selected method appears, adjustable or not. Filtering on the
+        // presence of parameters removed half the methods from the panel, which
+        // read as a defect rather than as an absence of settings.
+        const shown = SEARCHABLE.filter((entry) => filterState.has(entry.id));
+        $("pinbox").classList.toggle("hidden", shown.length === 0);
+
+        $("pinfields").innerHTML = shown
+          .map((entry) => {
+            const rows = [];
+
+            for (const [field, values] of Object.entries(entry.values || {})) {
+              const selected = pinSet(entry.id, field);
+              const step = (entry.group || {})[field];
+              const notable = (entry.notable || {})[field] || [];
+              let chips = notable
+                .map(
+                  (value) =>
+                    `<button class="chip" data-pin="${entry.id}|${field}|${value}" ` +
+                    `aria-pressed="${selected.has(value)}">${value}</button>`
+                )
+                .join("");
+
+              if (step) {
+                for (let start = values[0]; start <= values[values.length - 1]; start += step) {
+                  const slice = values.filter((v) => v >= start && v < start + step);
+                  if (!slice.length) continue;
+                  chips +=
+                    `<button class="chip chip-range" data-range="${entry.id}|${field}|${slice.join(",")}" ` +
+                    `aria-pressed="${slice.every((v) => selected.has(v))}">` +
+                    `${slice[0]}–${slice[slice.length - 1]}</button>`;
+                }
+              } else {
+                chips += values
+                  .filter((value) => !notable.includes(value))
+                  .map(
+                    (value) =>
+                      `<button class="chip" data-pin="${entry.id}|${field}|${value}" ` +
+                      `aria-pressed="${selected.has(value)}">${value}</button>`
+                  )
+                  .join("");
+              }
+
+              rows.push(
+                `<div class="pinrow"><span class="tiny-label">${escapeHtml(labelOf(field))}</span>` +
+                  `<button class="chip chip-all" data-all="${entry.id}|${field}" ` +
+                  `aria-pressed="${selected.size === 0}">${escapeHtml(t("all"))}</button>${chips}</div>`
+              );
+            }
+
+            for (const field of entry.text || []) {
+              const value = (freeText[entry.id] || {})[field] ?? "";
+              rows.push(
+                `<div class="pinrow"><span class="tiny-label">${escapeHtml(labelOf(field))}</span>` +
+                  `<input type="text" data-free="${entry.id}|${field}" value="${escapeHtml(value)}" ` +
+                  `placeholder="${escapeHtml(t("all").toLowerCase())}" spellcheck="false" /></div>` +
+                  (field === "key" ? `<p class="pinhint">${escapeHtml(t("keyHint"))}</p>` : "")
+              );
+            }
+
+            // Boolean decryption options. Vigenere's autokey is the only one
+            // so far; without it a text could be encrypted in autokey mode and
+            // then no longer read back by this same tool.
+            for (const flag of entry.flags || []) {
+              const on = pinSet(entry.id, flag).has(1);
+              rows.push(
+                `<div class="pinrow"><span class="tiny-label">&nbsp;</span>` +
+                  `<button class="chip" data-pin="${entry.id}|${flag}|1" ` +
+                  `aria-pressed="${on}">` +
+                  `${escapeHtml(t("f" + flag[0].toUpperCase() + flag.slice(1)))}</button></div>`
+              );
+            }
+
+            if (entry.note) rows.push(`<p class="pinnote">${escapeHtml(t(entry.note))}</p>`);
+
+            return `<div class="pinblock"><h4>${escapeHtml(t("ciphers")[entry.id])}</h4>${rows.join("")}</div>`;
+          })
+          .join("");
+
+        document.querySelectorAll("[data-pin]").forEach((button) => {
+          button.onclick = () => {
+            const [cipher, field, value] = button.dataset.pin.split("|");
+            const set = pinSet(cipher, field);
+            const number = Number(value);
+            set.has(number) ? set.delete(number) : set.add(number);
+            buildPins();
+            schedule(0);
+          };
+        });
+        document.querySelectorAll("[data-range]").forEach((button) => {
+          button.onclick = () => {
+            const [cipher, field, list] = button.dataset.range.split("|");
+            const set = pinSet(cipher, field);
+            const values = list.split(",").map(Number);
+            // A range already fully selected is cleared; otherwise it is
+            // completed. Toggling value by value would leave partial selections
+            // impossible to undo in one gesture.
+            const full = values.every((v) => set.has(v));
+            values.forEach((v) => (full ? set.delete(v) : set.add(v)));
+            buildPins();
+            schedule(0);
+          };
+        });
+        document.querySelectorAll("[data-all]").forEach((button) => {
+          button.onclick = () => {
+            const [cipher, field] = button.dataset.all.split("|");
+            pinSet(cipher, field).clear();
+            buildPins();
+            schedule(0);
+          };
+        });
+        document.querySelectorAll("[data-free]").forEach((input) => {
+          input.oninput = () => {
+            const [cipher, field] = input.dataset.free.split("|");
+            freeText[cipher] = freeText[cipher] || {};
+            freeText[cipher][field] = input.value;
+            schedule();
+          };
+        });
+      }
+
+      /* What the engine receives: only what was actually restricted. An empty set
+         is not transmitted — the absence of a constraint must stay an absence,
+         not a list of every value. */
+      function readPins() {
+        const out = {};
+        for (const [cipher, fields] of Object.entries(pins)) {
+          for (const [field, set] of Object.entries(fields)) {
+            if (set.size) (out[cipher] = out[cipher] || {})[field] = Array.from(set);
+          }
+        }
+        for (const [cipher, fields] of Object.entries(freeText)) {
+          const spec = SPEC[cipher] || {};
+          for (const [field, raw] of Object.entries(fields)) {
+            const name = (spec.rename || {})[field] || field;
+            if (MULTI_FIELDS.has(field)) {
+              const values = String(raw).split(",").map((v) => v.trim()).filter(Boolean);
+              if (values.length) (out[cipher] = out[cipher] || {})[name] = values;
+            } else if (String(raw).length) {
+              // No `.trim()`: a space *is* a valid separator, and stripping it
+              // would make that setting impossible to express.
+              (out[cipher] = out[cipher] || {})[name] = [String(raw)];
+            }
+          }
+        }
+        return out;
+      }
+
+      function buildBanks() {
+        $("banks").innerHTML = BANKS.map(
+          ({ code, label }) =>
+            `<button class="chip chip-method" data-bank="${code}" ` +
+            `aria-pressed="${loadedBanks.has(code)}">${label}</button>`
+        ).join("");
+        document.querySelectorAll("#banks button").forEach((button) => {
+          const code = button.dataset.bank;
+          if (loadedBanks.has(code)) return;
+          button.onclick = () => loadBank(code, button);
+        });
+      }
+
+      async function loadBank(code, button) {
+        button.disabled = true;
+        const original = button.textContent;
+        button.textContent = t("bankLoading");
+        try {
+          const bank = await fetch(`banks/${code}.json`).then((response) => {
+            if (!response.ok) throw new Error("bank not found");
+            return response.json();
+          });
+          pyodide.globals.set("_bank", bank);
+          // `load_bank` tells a language from a shared supplement on its own.
+          // Calling `register_language` fails on the technical bank, which has
+          // no frequency table.
+          await pyodide.runPythonAsync("cipher.load_bank(_bank.to_py())");
+          loadedBanks.add(code);
+          buildBanks();
+          schedule(0);
+        } catch (error) {
+          button.disabled = false;
+          button.textContent = original;
+          setStatus("error", t("bankFailed"));
+        }
+      }
+
+      /* ══ Cipher chain ══ */
+      const DEFAULT_VALUES = {
+        shift: 3, a: 5, b: 8, key: "disyner", rails: 3, offset: 0, sep: " ", prefix: "",
+      };
+      const NUMBER_FIELDS = new Set(["shift", "a", "b", "rails", "offset"]);
+      const LIMITS = { shift: [1, 93], b: [0, 25], rails: [2, 8], offset: [0, 12] };
+
+      let steps = [newStep("caesar")];
+
+      function newStep(method) {
+        const spec = PARAMS[method] || { fields: [] };
+        const values = {};
+        for (const field of spec.fields) {
+          values[field] = (spec.defaults || {})[field] ?? DEFAULT_VALUES[field] ?? "";
+        }
+        return { method, values, flags: new Set() };
+      }
+
+      function renderSteps() {
+        $("steps").innerHTML = steps
+          .map((step, index) => {
+            const spec = PARAMS[step.method] || { fields: [] };
+
+            // A method already at its cap is disabled in the list rather than
+            // refused afterwards: a choice one cannot make beats a choice
+            // silently undone. A step's own method stays selectable, otherwise
+            // the step could no longer render.
+            const methodSelect =
+              `<div class="step-field"><span class="tiny-label">${escapeHtml(t("method"))}</span>` +
+              `<select data-step-method="${index}" ` +
+              `title="${escapeHtml((SCOPE[lang] || {})[step.method] || "")}">` +
+              Object.keys(PARAMS)
+                .map((id) => {
+                  const own = id === step.method;
+                  const full = !own && !canAdd(id);
+                  return (
+                    `<option value="${id}"${own ? " selected" : ""}${full ? " disabled" : ""}>` +
+                    `${escapeHtml(t("ciphers")[id])}${full ? " ·" : ""}</option>`
+                  );
+                })
+                .join("") +
+              `</select></div>`;
+
+            const fields = spec.fields
+              .map((field) => {
+                const value = step.values[field] ?? "";
+                const label = escapeHtml(labelOf(field));
+                if (field === "a") {
+                  const options = AFFINE_A.map(
+                    (v) => `<option value="${v}"${String(v) === String(value) ? " selected" : ""}>${v}</option>`
+                  ).join("");
+                  return (
+                    `<div class="step-field"><span class="tiny-label">${label}</span>` +
+                    `<select data-step-field="${index}|a">${options}</select></div>`
+                  );
+                }
+                const limit = LIMITS[field]
+                  ? ` min="${LIMITS[field][0]}" max="${LIMITS[field][1]}"`
+                  : "";
+                const type = NUMBER_FIELDS.has(field) ? "number" : "text";
+                const wide = field === "key" ? " wide" : "";
+                return (
+                  `<div class="step-field${wide}"><span class="tiny-label">${label}</span>` +
+                  `<input data-step-field="${index}|${field}" type="${type}"${limit} ` +
+                  `value="${escapeHtml(value)}" spellcheck="false" /></div>`
+                );
+              })
+              .join("");
+
+            const flags = (spec.flags || [])
+              .map(
+                (flag) =>
+                  `<button class="chip" data-step-flag="${index}|${flag}" ` +
+                  `aria-pressed="${step.flags.has(flag)}">` +
+                  `${escapeHtml(t("f" + flag[0].toUpperCase() + flag.slice(1)))}</button>`
+              )
+              .join("");
+
+            return (
+              `<div class="step"><span class="step-index">${index + 1}</span>${methodSelect}${fields}` +
+              (flags ? `<div class="step-flags">${flags}</div>` : "") +
+              `<button class="info-btn step-info" data-info="${step.method}" ` +
+              `aria-label="${escapeHtml(fill(t("aboutCipher"), { name: t("ciphers")[step.method] }))}">i</button>` +
+              `<button class="icon-btn" data-step-remove="${index}" ` +
+              `${steps.length === 1 ? "disabled" : ""} ` +
+              `aria-label="${escapeHtml(t("removeStep"))}">✕</button></div>`
+            );
+          })
+          .join("");
+
+        document.querySelectorAll("[data-step-method]").forEach((select) => {
+          select.onchange = () => {
+            // Changing method resets the values: the previous ones mean
+            // nothing to the new method, and keeping them would produce mute
+            // parameters that Python would ignore silently.
+            steps[Number(select.dataset.stepMethod)] = newStep(select.value);
+            renderSteps();
+            schedule(0);
+          };
+        });
+        document.querySelectorAll("[data-step-field]").forEach((input) => {
+          input.oninput = input.onchange = () => {
+            const [index, field] = input.dataset.stepField.split("|");
+            steps[index].values[field] = input.value;
+            schedule();
+          };
+        });
+        document.querySelectorAll("[data-step-flag]").forEach((button) => {
+          button.onclick = () => {
+            const [index, flag] = button.dataset.stepFlag.split("|");
+            const set = steps[index].flags;
+            set.has(flag) ? set.delete(flag) : set.add(flag);
+            renderSteps();
+            schedule(0);
+          };
+        });
+        document.querySelectorAll("[data-step-remove]").forEach((button) => {
+          button.onclick = () => {
+            steps.splice(Number(button.dataset.stepRemove), 1);
+            renderSteps();
+            schedule(0);
+          };
+        });
+
+        // The count and the add-button state are recomputed on every render:
+        // that is the only moment the chain length can have changed, and doing
+        // it elsewhere would eventually drift.
+        bindInfo();
+
+        const saturated = steps.length >= MAX_STEPS || !Object.keys(PARAMS).some(canAdd);
+        $("add-step").disabled = saturated;
+        $("step-count").textContent = `${steps.length} / ${MAX_STEPS}`;
+        $("step-count").classList.toggle("at-limit", saturated);
+      }
+
+      $("add-step").onclick = () => {
+        if (steps.length >= MAX_STEPS) return;
+        // The offered method is the first still available. Blindly adding
+        // Base64 would produce an immediately invalid step once its two forms
+        // are already taken.
+        const next = Object.keys(PARAMS).find(canAdd);
+        if (!next) return;
+        steps.push(newStep(next));
+        renderSteps();
+        schedule(0);
+      };
+
+      /* ══ Automatic execution ══
+         No button: typing triggers, settings trigger. Two safeguards, without
+         which fast typing would launch one analysis per character and the
+         answers would come back out of order:
+
+         — a delay before starting, reset on every keystroke;
+         — a lock during execution, with a single pending re-run. Pyodide has
+           one thread: queueing ten calls does not speed them up, and only the
+           latest screen state is of interest. */
+      let timer = null;
+      let running = false;
+      let pending = false;
+
+      function schedule(delay = 320) {
+        clearTimeout(timer);
+        timer = setTimeout(run, delay);
+      }
+
+      async function run() {
+        if (!pyodide) return;
+        if (running) { pending = true; return; }
+        running = true;
+        setStatus("busy", t("working"));
+        try {
+          await (mode === "decrypt" ? runDecrypt() : runEncrypt());
+          setStatus("ready", t("ready"));
+        } catch (error) {
+          setStatus("error", String(error.message || error).split("\n").pop());
+        } finally {
+          running = false;
+          if (pending) { pending = false; run(); }
+        }
+      }
+
+      function setStatus(state, text) {
+        $("status").dataset.state = state;
+        $("status").textContent = text;
+      }
+
+      let lastReport = null;
+
+      async function runDecrypt() {
+        const text = $("cipher-input").value;
+        if (!text.trim()) {
+          lastReport = null;
+          $("output").innerHTML = `<p class="empty">${escapeHtml(t("emptyInput"))}</p>`;
+          return;
+        }
+        pyodide.globals.set("_text", text);
+        pyodide.globals.set("_only", filterState.size ? Array.from(filterState) : null);
+        pyodide.globals.set("_pins", readPins());
+        const raw = await pyodide.runPythonAsync(`
+only = list(_only) if _only is not None else None
+pins = _pins.to_py() if _pins is not None else None
+json.dumps(cipher.analyse(_text, only, pins).as_dict(), ensure_ascii=False)
+        `);
+        lastReport = JSON.parse(raw);
+        render(lastReport);
+      }
+
+      let lastStages = null;
+
+      async function runEncrypt() {
+        const text = $("plain-input").value;
+        if (!text.trim()) {
+          lastStages = null;
+          $("encode-output").innerHTML = `<p class="empty">${escapeHtml(t("emptyInput"))}</p>`;
+          return;
+        }
+        const payload = steps.map((step) => {
+          const spec = PARAMS[step.method] || { fields: [] };
+          const params = {};
+          for (const field of spec.fields) {
+            const name = (spec.rename || {})[field] || field;
+            // Numeric fields must cross as numbers: Python would refuse a
+            // string for a rail count.
+            params[name] = NUMBER_FIELDS.has(field)
+              ? Number(step.values[field])
+              : step.values[field];
+          }
+          for (const flag of spec.flags || []) params[flag] = step.flags.has(flag);
+          return { cipher: step.method, params };
+        });
+        pyodide.globals.set("_text", text);
+        pyodide.globals.set("_steps", payload);
+        const raw = await pyodide.runPythonAsync(
+          `json.dumps(cipher.encode_stages(_text, _steps.to_py()), ensure_ascii=False)`
+        );
+        lastStages = { text, stages: JSON.parse(raw) };
+        renderStages(lastStages);
+      }
+
+      /* The readable detail is rebuilt here from the raw parameters. The engine
+         returns data only, which is what allows "shift 3" to be displayed in
+         any language without the engine knowing which. */
+
+      /* The report comes back as families — letters, digits — rather than as a
+         sentence, which is what allows it to be translated here rather than in
+         the engine.
+
+         Two messages, two severities. "Only the digits changed" is information:
+         the method did its job, but its job does not cover everything. "Nothing
+         changed" is a warning: the method was useless on this text. Merging
+         them would mean crying wolf on every Caesar, which never touches digits
+         and yet has no fault. */
+      /* Loss is of a different nature from leakage and deserves its own message.
+         A character that passes through intact is still there: awkward. A
+         deleted character never comes back: serious. Displaying them the same
+         way would claim that losing punctuation and leaving it in the clear are
+         the same problem. */
+      function lossNote(lost) {
+        if (!lost || !lost.length) return "";
+        const out = lost.map((k) => t("cls" + k[0].toUpperCase() + k.slice(1)));
+        const joined =
+          out.length === 1
+            ? out[0]
+            : out.slice(0, -1).join(", ") + " " + t("and") + " " + out.slice(-1);
+        const sentence = fill(t("lossPermanent"), { what: joined });
+        return `<p class="untouched alert">${escapeHtml(
+          sentence.charAt(0).toUpperCase() + sentence.slice(1)
+        )}</p>`;
+      }
+
+      function scopeNote(scope) {
+        if (!scope || !scope.untouched || !scope.untouched.length) return "";
+        const names = (list) => {
+          const out = list.map((k) => t("cls" + k[0].toUpperCase() + k.slice(1)));
+          return out.length === 1
+            ? out[0]
+            : out.slice(0, -1).join(", ") + " " + t("and") + " " + out.slice(-1);
+        };
+        const nothing = !scope.changed.length;
+        // Both templates use the same variable names: a placeholder matching
+        // nothing is silently replaced by an empty string, and the sentence
+        // comes out truncated without any error being raised.
+        const sentence = fill(nothing ? t("scopeNothing") : t("scopePartial"), {
+          changed: names(scope.changed),
+          untouched: names(scope.untouched),
+        });
+        // Family names are stored lowercase so they can be chained together;
+        // only the first letter of the sentence is capitalised.
+        return `<p class="untouched${nothing ? " alert" : ""}">${escapeHtml(
+          sentence.charAt(0).toUpperCase() + sentence.slice(1)
+        )}</p>`;
+      }
+
+      function detailOf(cipher, params) {
+        const parts = [];
+        if (params.shift !== undefined) parts.push(fill(t("dShift"), { v: params.shift }));
+        if (params.a !== undefined) parts.push(`a=${params.a}, b=${params.b}`);
+        if (params.rails !== undefined) {
+          parts.push(fill(t("dRails"), { v: params.rails }));
+          if (params.offset) parts.push(fill(t("dOffset"), { v: params.offset }));
+        }
+        if (params.key !== undefined) parts.push(fill(t("dKey"), { v: params.key }));
+        if (!parts.length && ["base64", "hex", "binary", "morse"].includes(cipher)) {
+          parts.push(t("dValid"));
+        }
+        return parts.join(", ");
+      }
+
+      function reasonText(report) {
+        if (!report.reason) return "";
+        let text = fill(t("reasons")[report.reason], report.reasonData || {});
+        if (report.polyalphabetic) text += " " + t("reasons").polyalphabetic;
+        return text;
+      }
+
+      function render(report) {
+        const plain = report.alreadyPlain;
+        const sure = report.reliable && !plain;
+
+        /* Three verdicts, not two. "This text is not encrypted" is an answer in
+           its own right: filing it among the failures would suggest the engine
+           failed, when in fact it answered. */
+        const tone = plain ? "plain" : sure ? "sure" : "unsure";
+        const heading = plain ? t("headingPlain") : sure ? t("headingSure") : t("headingUnsure");
+        const top = report.candidates[0];
+        const message =
+          reasonText(report) ||
+          (top
+            ? fill(t("fallback"), {
+                label: t("ciphers")[top.cipher] || top.label,
+                language: t("langOf")[top.language] || top.language,
+              })
+            : t("noCandidate"));
+
+        let html = `
+          <div class="verdict ${tone}">
+            <b>${escapeHtml(heading)}</b>
+            <p>${escapeHtml(message)}</p>
+          </div>
+          <div class="metrics">
+            <div class="metric"><span>${escapeHtml(t("mLetters"))}</span><strong>${report.sampleLength}</strong></div>
+            <div class="metric"><span>${escapeHtml(t("mIoc"))}</span><strong>${report.indexOfCoincidence.toFixed(3)}</strong></div>
+            <div class="metric"><span>${escapeHtml(t("mCount"))}</span><strong>${report.candidates.length}</strong></div>
+          </div>
+          <div class="results">`;
+
+        if (!report.candidates.length) {
+          html += `<p class="empty">${escapeHtml(t("noCandidate"))}</p>`;
+        }
+
+        /* Every hypothesis is rendered, not the first four. A counter that
+           contradicts what is shown is worse than no counter. The panel
+           scrolls; space was never the problem. */
+        report.candidates.forEach((candidate, index) => {
+          const percent = Math.round(candidate.confidence * 100);
+          const name = t("ciphers")[candidate.cipher] || candidate.label;
+          const variants = candidate.variants || [];
+          // The entrance delay is computed rather than fixed in CSS, which
+          // could only describe four. It is capped: beyond that the last card
+          // would arrive after the eye has already settled.
+          const delay = Math.min(index * 0.035, 0.28).toFixed(3);
+
+          html += `
+            <article class="result ${index === 0 && sure ? "best" : ""}"
+                     style="animation-delay:${delay}s">
+              <div class="result-top">
+                <span class="result-name">${escapeHtml(name)}</span>
+                <span class="result-detail">${escapeHtml(detailOf(candidate.cipher, candidate.params))}</span>
+                ${candidate.pinned ? `<span class="tag">${escapeHtml(t("pinnedTag"))}</span>` : ""}
+                <span class="result-score">${percent}%</span>
+              </div>
+              <div class="bar"><i style="width:${percent}%"></i></div>
+              <p class="plaintext">${escapeHtml(candidate.plaintext)}</p>
+              ${scopeNote(candidate.scope)}
+              <button class="peel" data-peel="${index}">${escapeHtml(t("peel"))}</button>`;
+
+          if (variants.length) {
+            const label =
+              variants.length === 1
+                ? t("variantsOne")
+                : fill(t("variantsMany"), { n: variants.length });
+            html += `
+              <details class="variants">
+                <summary>${escapeHtml(label)}</summary>
+                <div class="variants-list">
+                ${variants
+                  .map(
+                    (variant) => `
+                  <div class="variant">
+                    <span class="variant-params">${escapeHtml(detailOf(candidate.cipher, variant.params))}</span>
+                    <span class="variant-text" title="${escapeHtml(variant.plaintext)}">${escapeHtml(variant.plaintext)}</span>
+                    <span class="variant-score">${Math.round(variant.confidence * 100)}%</span>
+                  </div>`
+                  )
+                  .join("")}
+                </div>
+              </details>`;
+          }
+          html += `</article>`;
+        });
+
+        $("output").innerHTML = html + "</div>";
+
+        /* Take a result as the new input. Without this button, peeling a text
+           encrypted in several layers meant selecting it with the mouse and
+           pasting it back — and since removing one layer leaves something still
+           unreadable and therefore badly scored, it was easy to believe the
+           decryption had failed when it had succeeded. */
+        document.querySelectorAll("[data-peel]").forEach((button) => {
+          button.onclick = () => {
+            $("cipher-input").value = report.candidates[Number(button.dataset.peel)].plaintext;
+            $("cipher-input").focus();
+            schedule(0);
+          };
+        });
+      }
+
+      function renderStages({ text, stages }) {
+        let previous = text;
+        const rows = stages
+          .map((stage, index) => {
+            const detail = Object.entries(stage.params)
+              .filter(([, v]) => v !== "" && v !== false)
+              .map(([k, v]) => `${k}=${v}`)
+              .join(" ");
+            // A step that changes nothing is flagged: that is the case of a
+            // Caesar placed after Morse, where no letter is left.
+            const inert = stage.output === previous;
+            previous = stage.output;
+            return `
+              <div class="stage ${index === stages.length - 1 ? "final" : ""}">
+                <span class="stage-label">${index + 1}. ${escapeHtml(t("ciphers")[stage.cipher])}
+                  <span class="result-detail">${escapeHtml(detail)}</span></span>
+                <span class="stage-text">${escapeHtml(stage.output)}${
+                  inert ? ` <span class="stage-note">${escapeHtml(t("inert"))}</span>` : ""
+                }${lossNote(stage.lost)}${scopeNote(stage.scope)}</span>
+              </div>`;
+          })
+          .join("");
+
+        const final = stages.length ? stages[stages.length - 1].output : text;
+        $("encode-output").innerHTML =
+          `<article class="result best">${rows}
+             <button class="peel" id="reuse">${escapeHtml(t("reuse"))}</button>
+           </article>`;
+        $("reuse").onclick = () => {
+          $("cipher-input").value = final;
+          setMode("decrypt");
+          schedule(0);
+        };
+      }
+
+
+      /* ══ Explanatory card ══
+         Three ways to close, because none suffices alone: the cross for those
+         who look for it, the backdrop for those who click beside it, and Escape
+         for those who never leave the keyboard. The key is registered once
+         rather than on every open, otherwise listeners pile up. */
+      let lastFocus = null;
+
+      /* Cross-references between methods. The source text writes [[caesar]]; the
+         page replaces it with a green button carrying the translated name. The
+         text is escaped **before** links are inserted: the other way round would
+         escape the markup just produced. */
+      function linkify(text, current) {
+        return escapeHtml(text).replace(/\[\[(\w+)\]\]/g, (_, id) => {
+          const name = (t("ciphers") || {})[id];
+          if (!name) return id;
+          // A cross-reference to the card already open leads nowhere, so it is
+          // rendered as emphasis rather than a dead button. This happens as soon
+          // as a paragraph is shared between cards — the one about the ROT
+          // family names all four members, whichever is being displayed.
+          if (id === current) return `<em class="xref-self">${escapeHtml(name)}</em>`;
+          return `<button class="xref" data-info="${id}">${escapeHtml(name)}</button>`;
+        });
+      }
+
+      function section(key, open, inner) {
+        return (
+          `<details class="info-section"${open ? " open" : ""}>` +
+          `<summary>${escapeHtml(t(key))}</summary>` +
+          `<div class="info-content">${inner}</div></details>`
+        );
+      }
+
+      function openInfo(id) {
+        const entry = (INFO[lang] || {})[id];
+        if (!entry) return;
+        // The starting point is only recorded on the first open: when
+        // following a cross-reference, focus must return to the original
+        // button, not to the link just left.
+        if ($("modal").classList.contains("hidden")) lastFocus = document.activeElement;
+
+        $("modal-era").textContent = entry.era;
+        $("modal-title").textContent = t("ciphers")[id] || id;
+
+        let how = entry.how.map((p) => `<p>${linkify(p, id)}</p>`).join("");
+        if (entry.diagram && DIAGRAMS[entry.diagram]) {
+          how += `<pre class="diagram">${escapeHtml(DIAGRAMS[entry.diagram])}</pre>`;
+        }
+        const history = entry.history.map((p) => `<p>${linkify(p, id)}</p>`).join("");
+        const params = entry.params.length
+          ? "<dl>" + entry.params
+              .map(([name, effect]) => `<dt>${escapeHtml(name)}</dt><dd>${linkify(effect, id)}</dd>`)
+              .join("") + "</dl>"
+          : `<p>${escapeHtml(t("infoNoParams"))}</p>`;
+
+        $("modal-body").innerHTML =
+          section("infoHow", true, how) +
+          section("infoHistory", false, history) +
+          section("infoParams", false, params);
+
+        $("modal").classList.remove("hidden");
+        $("modal-card").scrollTop = 0;
+        bindInfo();
+        $("modal-close").focus();
+      }
+
+      function closeInfo() {
+        $("modal").classList.add("hidden");
+        // Focus returns where it came from: otherwise it falls back to the top
+        // of the document and keyboard navigation restarts from scratch.
+        if (lastFocus && document.contains(lastFocus)) lastFocus.focus();
+      }
+
+      $("modal-close").onclick = closeInfo;
+      $("modal").onclick = (event) => {
+        // Only the backdrop closes. Without this test a click inside the card
+        // would bubble up here and close it immediately.
+        if (event.target === $("modal")) closeInfo();
+      };
+      document.addEventListener("keydown", (event) => {
+        if (event.key === "Escape" && !$("modal").classList.contains("hidden")) closeInfo();
+      });
+
+      function bindInfo() {
+        document.querySelectorAll("[data-info]").forEach((button) => {
+          button.onclick = (event) => {
+            event.preventDefault();
+            openInfo(button.dataset.info);
+          };
+        });
+      }
+
+      /* ══ Mode et langue ══ */
+      function setMode(next) {
+        mode = next;
+        document.querySelectorAll("[data-mode]").forEach((button) =>
+          button.setAttribute("aria-pressed", String(button.dataset.mode === next))
+        );
+        const decrypting = next === "decrypt";
+        $("cipher-input").classList.toggle("hidden", !decrypting);
+        $("plain-input").classList.toggle("hidden", decrypting);
+        $("opts-decrypt").classList.toggle("hidden", !decrypting);
+        $("opts-encrypt").classList.toggle("hidden", decrypting);
+        $("output").classList.toggle("hidden", !decrypting);
+        $("encode-output").classList.toggle("hidden", decrypting);
+        $("input-eyebrow").textContent = decrypting ? t("inputCipher") : t("inputPlain");
+        $("output-eyebrow").textContent = decrypting ? t("outputDecrypt") : t("outputEncrypt");
+        schedule(0);
+      }
+      document.querySelectorAll("[data-mode]").forEach((button) => {
+        button.onclick = () => setMode(button.dataset.mode);
+      });
+
+      function applyLanguage(next) {
+        lang = next;
+        document.documentElement.lang = next;
+        document.querySelectorAll("[data-lang]").forEach((button) =>
+          button.setAttribute("aria-pressed", String(button.dataset.lang === next))
+        );
+        document.querySelectorAll("[data-i18n]").forEach((element) => {
+          element.textContent = t(element.dataset.i18n);
+        });
+        document.querySelectorAll("[data-i18n-html]").forEach((element) => {
+          element.innerHTML = t(element.dataset.i18nHtml);
+        });
+        document.querySelectorAll("[data-i18n-label]").forEach((element) => {
+          element.setAttribute("aria-label", t(element.dataset.i18nLabel));
+        });
+        $("cipher-input").placeholder = t("placeholderCipher");
+        $("plain-input").placeholder = t("placeholderPlain");
+        $("input-eyebrow").textContent = mode === "decrypt" ? t("inputCipher") : t("inputPlain");
+        $("output-eyebrow").textContent = mode === "decrypt" ? t("outputDecrypt") : t("outputEncrypt");
+        buildFilters();
+        buildPins();
+        buildBanks();
+        renderSteps();
+        bindInfo();
+        // The last result is re-rendered in the new language rather than
+        // recomputed: switching language must cost the engine nothing.
+        if (mode === "decrypt" && lastReport) render(lastReport);
+        if (mode === "encrypt" && lastStages) renderStages(lastStages);
+        if (pyodide) setStatus("ready", t("ready"));
+      }
+      document.querySelectorAll("[data-lang]").forEach((button) => {
+        button.onclick = () => applyLanguage(button.dataset.lang);
+      });
+
+      /* ══ Startup ══ */
+      let pyodide = null;
+
+      async function boot() {
+        setStatus("boot", t("booting"));
+        try {
+          pyodide = await loadPyodide();
+          const source = await fetch("cipher.py").then((response) => {
+            if (!response.ok) throw new Error("cipher.py not found");
+            return response.text();
+          });
+          pyodide.FS.writeFile("cipher.py", source);
+          await pyodide.runPythonAsync("import cipher, json");
+          setStatus("ready", t("ready"));
+          run();
+        } catch (error) {
+          setStatus("error", t("bootFailed"));
+        }
+      }
+
+      $("cipher-input").oninput = () => schedule();
+      $("plain-input").oninput = () => schedule();
+
+      function escapeHtml(value) {
+        return String(value).replace(/[&<>"']/g, (c) => ({
+          "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+        })[c]);
+      }
+
+      $("cipher-input").value = SAMPLE_CIPHER;
+      $("plain-input").value = SAMPLE_PLAIN;
+      applyLanguage("en");
+      setMode("decrypt");
+      boot();
+    </script>
+  </body>
+</html>
