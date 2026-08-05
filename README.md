@@ -23,12 +23,24 @@ Vigenère and Beaufort by estimating the period from the index of coincidence,
 then solving each column; columnar by enumerating permutations, since only the
 key's alphabetical ordering matters.
 
+## Install
+
+```
+pip install disypher
+```
+
+Or straight from the repository:
+
+```
+pip install git+https://github.com/BRedouane/disypher.git
+```
+
 ## Using it
 
 ```python
-import cipher
+import disypher
 
-report = cipher.analyse("Jnxr hc Arb. Gur Zngevk unf lbh.")
+report = disypher.analyse("Jnxr hc Arb. Gur Zngevk unf lbh.")
 best = report.candidates[0]
 
 best.cipher        # 'caesar'
@@ -41,14 +53,14 @@ report.reliable    # True
 Narrow the search, or impose settings rather than searching for them:
 
 ```python
-cipher.analyse(text, ["caesar", "affine"])
-cipher.analyse(text, ["caesar"], {"caesar": {"shift": [3, 7, 13]}})
+disypher.analyse(text, ["caesar", "affine"])
+disypher.analyse(text, ["caesar"], {"caesar": {"shift": [3, 7, 13]}})
 ```
 
 Encrypt through a chain, keeping every intermediate stage:
 
 ```python
-cipher.encode_stages(text, [
+disypher.encode_stages(text, [
     {"cipher": "caesar", "params": {"shift": 7}},
     {"cipher": "reverse"},
     {"cipher": "base64"},
@@ -58,7 +70,7 @@ cipher.encode_stages(text, [
 From the command line:
 
 ```
-python cipher.py "Jnxr hc Arb. Gur Zngevk unf lbh."
+disypher "Jnxr hc Arb. Gur Zngevk unf lbh."
 ```
 
 ## Design principles
@@ -94,21 +106,28 @@ Three signals, each covering a weakness of the others:
 ## Language banks
 
 English and French are built in. Spanish, German, Italian and a technical
-vocabulary bank ship as JSON files under `banks/` and load on demand:
+vocabulary bank ship with the package and load on demand:
 
 ```python
-import json
-cipher.load_bank(json.load(open("banks/es.json")))
+disypher.load_builtin_bank("es")
+disypher.load_builtin_bank("technical")   # dev and unit vocabulary
 ```
+
+`technical` is not a language: it holds terms such as "commit", "kg" or
+"frontend" and extends every language already loaded rather than registering a
+new one.
 
 More vocabulary means better recognition on short texts, and one more language
 the engine can identify.
 
 ## Web interface
 
-`index.html` runs the engine in a browser through
-[Pyodide](https://pyodide.org). It loads `cipher.py` as-is rather than
-reimplementing it in JavaScript, so the page cannot drift from the library.
+A live demo runs at **https://bredouane.github.io/disypher/**.
+
+`index.html` executes the engine in the browser through
+[Pyodide](https://pyodide.org). It fetches `disypher/__init__.py` as-is rather
+than reimplementing it in JavaScript, so the page and the published package can
+never drift apart.
 
 Serve it over HTTP — opening the file directly will not work:
 

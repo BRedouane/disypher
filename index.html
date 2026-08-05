@@ -18,7 +18,7 @@
     <!--
       One file, no build step, no framework.
 
-      The engine is not rewritten in JavaScript: `cipher.py` is loaded as-is and
+      The engine is not rewritten in JavaScript: `disypher/__init__.py` is loaded as-is and
       executed by Pyodide, a build of Python compiled to WebAssembly. The same
       file therefore runs in a terminal and in this page.
 
@@ -1087,7 +1087,7 @@
           dShift: "shift {v}", dRails: "{v} rails", dOffset: "offset {v}",
           dKey: 'key "{v}"', dValid: "valid decoding",
           footer:
-            'Engine: <code>cipher.py</code> — standard library only, no dependencies. Run here by ' +
+            'Engine: <code>disypher</code> — standard library only, no dependencies. Run here by ' +
             '<a href="https://pyodide.org" target="_blank" rel="noopener noreferrer">Pyodide</a>, ' +
             'Python compiled to WebAssembly: this page runs the original file, not a JavaScript translation.',
         },
@@ -1196,7 +1196,7 @@
           dShift: "décalage {v}", dRails: "{v} rails", dOffset: "décalage {v}",
           dKey: "clé « {v} »", dValid: "décodage valide",
           footer:
-            'Moteur : <code>cipher.py</code> — bibliothèque standard uniquement, aucune dépendance. ' +
+            'Moteur : <code>disypher</code> — bibliothèque standard uniquement, aucune dépendance. ' +
             'Exécuté ici par <a href="https://pyodide.org" target="_blank" rel="noopener noreferrer">Pyodide</a>, ' +
             "une compilation de Python en WebAssembly : la page fait tourner le fichier original, " +
             "pas une traduction en JavaScript.",
@@ -1205,7 +1205,7 @@
 
 
       /* ══ Explanatory cards ══
-         The diagrams are produced by `cipher.py` itself — a diagram drawn
+         The diagrams are produced by the engine itself — a diagram drawn
          separately eventually lies about what the code does. */
       const DIAGRAMS = {
         railfence: "rail 1  A···C···D···\nrail 2  ·T·A·K·T·A·N\nrail 3  ··T···A···W·\n\nread →  ACDTAKTANTAW",
@@ -2184,7 +2184,7 @@
         const original = button.textContent;
         button.textContent = t("bankLoading");
         try {
-          const bank = await fetch(`banks/${code}.json`).then((response) => {
+          const bank = await fetch(`disypher/banks/${code}.json`).then((response) => {
             if (!response.ok) throw new Error("bank not found");
             return response.json();
           });
@@ -2192,7 +2192,7 @@
           // `load_bank` tells a language from a shared supplement on its own.
           // Calling `register_language` fails on the technical bank, which has
           // no frequency table.
-          await pyodide.runPythonAsync("cipher.load_bank(_bank.to_py())");
+          await pyodide.runPythonAsync("disypher.load_bank(_bank.to_py())");
           loadedBanks.add(code);
           buildBanks();
           schedule(0);
@@ -2404,7 +2404,7 @@
         const raw = await pyodide.runPythonAsync(`
 only = list(_only) if _only is not None else None
 pins = _pins.to_py() if _pins is not None else None
-json.dumps(cipher.analyse(_text, only, pins).as_dict(), ensure_ascii=False)
+json.dumps(disypher.analyse(_text, only, pins).as_dict(), ensure_ascii=False)
         `);
         lastReport = JSON.parse(raw);
         render(lastReport);
@@ -2436,7 +2436,7 @@ json.dumps(cipher.analyse(_text, only, pins).as_dict(), ensure_ascii=False)
         pyodide.globals.set("_text", text);
         pyodide.globals.set("_steps", payload);
         const raw = await pyodide.runPythonAsync(
-          `json.dumps(cipher.encode_stages(_text, _steps.to_py()), ensure_ascii=False)`
+          `json.dumps(disypher.encode_stages(_text, _steps.to_py()), ensure_ascii=False)`
         );
         lastStages = { text, stages: JSON.parse(raw) };
         renderStages(lastStages);
@@ -2809,12 +2809,14 @@ json.dumps(cipher.analyse(_text, only, pins).as_dict(), ensure_ascii=False)
         setStatus("boot", t("booting"));
         try {
           pyodide = await loadPyodide();
-          const source = await fetch("cipher.py").then((response) => {
-            if (!response.ok) throw new Error("cipher.py not found");
+          // The library itself is fetched, not a copy: the page and the
+          // published package can never drift apart.
+          const source = await fetch("disypher/__init__.py").then((response) => {
+            if (!response.ok) throw new Error("disypher module not found");
             return response.text();
           });
-          pyodide.FS.writeFile("cipher.py", source);
-          await pyodide.runPythonAsync("import cipher, json");
+          pyodide.FS.writeFile("disypher.py", source);
+          await pyodide.runPythonAsync("import disypher, json");
           setStatus("ready", t("ready"));
           run();
         } catch (error) {

@@ -23,8 +23,9 @@ Three principles govern this file:
 from __future__ import annotations
 
 import base64
-import itertools
 import binascii
+import itertools
+import json as _json
 import math
 import re
 from dataclasses import dataclass, field
@@ -118,6 +119,49 @@ def load_bank(bank: dict) -> str:
         bank["code"], bank["name"], bank.get("frequencies", {}), bank["words"]
     )
     return f"{entry.code}: {len(entry.words)}"
+
+
+# Vocabulary banks shipped inside the package. Loading one is optional: the
+# module works with English and French alone, and each bank adds recognition
+# accuracy plus one more language the engine can identify.
+BUILTIN_BANKS = ("es", "de", "it", "technical")
+
+# The technical bank is stored under its historical file name.
+_BANK_FILES = {"technical": "universal.json"}
+
+
+def load_builtin_bank(code: str) -> str:
+    """
+    Load one of the banks distributed with the package.
+
+    Reading them through `importlib.resources` rather than a path built from
+    `__file__` is what makes them work once installed: pip may place the
+    package inside a zip archive, where no filesystem path exists.
+
+        >>> import disypher
+        >>> disypher.load_builtin_bank("es")
+
+    `technical` is not a language. It holds development and unit vocabulary —
+    "commit", "kg", "frontend" — and extends every language already loaded
+    rather than registering a new one.
+    """
+    if code not in BUILTIN_BANKS:
+        raise ValueError(
+            f"unknown bank {code!r}; available: {', '.join(BUILTIN_BANKS)}"
+        )
+    name = _BANK_FILES.get(code, f"{code}.json")
+    try:
+        from importlib import resources
+
+        raw = resources.files(__package__).joinpath("banks", name).read_text("utf-8")
+    except (ImportError, AttributeError, TypeError):
+        # Python 3.8 and standalone use, where the module is not a package.
+        import os
+
+        here = os.path.dirname(os.path.abspath(__file__))
+        with open(os.path.join(here, "banks", name), encoding="utf-8") as handle:
+            raw = handle.read()
+    return load_bank(_json.loads(raw))
 
 
 def extend_words(code: str, words) -> int:
@@ -1926,13 +1970,26 @@ def decode_with_key(text: str, cipher: str, **params) -> str:
 # Command-line entry point
 # ---------------------------------------------------------------------------
 
-if __name__ == "__main__":
-    import json
+def _cli(argv=None) -> int:
+    """Command-line entry point: analyse a text and print the report as JSON."""
     import sys
 
-    if len(sys.argv) < 2:
-        print('usage: python cipher.py "encrypted text"')
-        sys.exit(1)
+    args = list(sys.argv[1:] if argv is None else argv)
+    if not args:
+        print('usage: disypher "encrypted text"', file=sys.stderr)
+        return 1
+    report = analyse(" ".join(args))
+    try:
+        print(_json.dumps(report.as_dict(), ensure_ascii=False, indent=2))
+    except BrokenPipeError:
+        # `disypher text | head` closes the pipe early. Python would report
+        # this as a crash on exit; the shell considers it perfectly normal.
+        import os
 
-    report = analyse(" ".join(sys.argv[1:]))
-    print(json.dumps(report.as_dict(), ensure_ascii=False, indent=2))
+        os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
+        return 0
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(_cli())

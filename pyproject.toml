@@ -1,0 +1,56 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "disypher"
+version = "0.1.0"
+description = "Classical cipher analysis: fifteen ciphers ranked by confidence, with Vigenere, Beaufort and columnar transposition broken without the key."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { file = "LICENSE" }
+authors = [{ name = "Redouane Benomar", email = "benomaredouane@gmail.com" }]
+keywords = [
+    "cryptography",
+    "cipher",
+    "cryptanalysis",
+    "classical-ciphers",
+    "caesar",
+    "vigenere",
+    "frequency-analysis",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Education",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Security :: Cryptography",
+    "Typing :: Typed",
+]
+
+# Deliberately empty, and worth stating: the engine uses the standard library
+# only. Nothing to resolve, nothing to break on a future release.
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/BRedouane/disypher"
+Demo = "https://bredouane.github.io/disypher/"
+Issues = "https://github.com/BRedouane/disypher/issues"
+
+[project.scripts]
+disypher = "disypher:_cli"
+
+[tool.hatch.build.targets.wheel]
+packages = ["disypher"]
+
+[tool.hatch.build.targets.sdist]
+# The web front-end is not part of the library, but shipping it in the source
+# archive keeps the published package a faithful copy of the repository.
+include = ["disypher", "index.html", "README.md", "LICENSE", "pyproject.toml"]
