@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "disypher"
-version = "0.1.0"
+version = "0.2.0"
 description = "Classical cipher analysis: fifteen ciphers ranked by confidence, with Vigenere, Beaufort and columnar transposition broken without the key."
 readme = "README.md"
 requires-python = ">=3.9"

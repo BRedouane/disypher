@@ -30,7 +30,7 @@ import math
 import re
 from dataclasses import dataclass, field
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 # ---------------------------------------------------------------------------
 # Language registry
@@ -1967,27 +1967,756 @@ def decode_with_key(text: str, cipher: str, **params) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Cipher catalogue
+# ---------------------------------------------------------------------------
+#
+# Declares what each method is called, which family it belongs to and which
+# parameters it accepts, with their defaults. Everything else shown by the
+# `info` command — whether a cipher is its own inverse, which character classes
+# it touches, whether its key can be recovered — is **measured** by running the
+# code rather than declared here. A hand-written description eventually
+# contradicts the implementation; a measured one cannot.
+
+CIPHER_FAMILY = {
+    "caesar": "substitution", "rot13": "substitution", "rot5": "substitution",
+    "rot18": "substitution", "rot47": "substitution", "atbash": "substitution",
+    "affine": "substitution", "vigenere": "polyalphabetic",
+    "beaufort": "polyalphabetic", "railfence": "transposition",
+    "columnar": "transposition", "reverse": "transposition",
+    "base64": "encoding", "hex": "encoding", "binary": "encoding",
+    "morse": "encoding",
+}
+
+CIPHER_PARAMS = {
+    "caesar": {"shift": 3},
+    "rot13": {},
+    "rot5": {},
+    "rot18": {},
+    "rot47": {"shift": 47},
+    "atbash": {},
+    "affine": {"a": 5, "b": 8},
+    "vigenere": {"key": "disyner", "autokey": False},
+    "beaufort": {"key": "disyner"},
+    "railfence": {"rails": 3, "offset": 0},
+    "columnar": {"key": "zebra", "pad": "x"},
+    "reverse": {},
+    "base64": {"urlsafe": False},
+    "hex": {"sep": "", "prefix": "", "upper": False},
+    "binary": {"sep": " ", "bits": 8},
+    "morse": {"letter_sep": " ", "word_sep": " / "},
+}
+
+# Parameters accepted when **decrypting**, which are not the same as those
+# accepted when encrypting. Three differences, each with a reason:
+#
+#   columnar  gains `width`, which bounds the permutation search, and loses
+#             `pad`, since padding is stripped on reading;
+#   base64    loses `urlsafe`, both alphabets being recognised automatically;
+#   hex       loses `upper`, hexadecimal reading being case-insensitive.
+#
+# Listing only the encryption side hid `columnar.width` entirely: a setting
+# that existed, worked, and could not be discovered.
+CIPHER_SEARCH = {
+    "caesar": ("shift",),
+    "rot13": (),
+    "rot5": (),
+    "rot18": (),
+    "rot47": ("shift",),
+    "atbash": (),
+    "affine": ("a", "b"),
+    "vigenere": ("key", "autokey"),
+    "beaufort": ("key",),
+    "railfence": ("rails", "offset"),
+    "columnar": ("key", "width"),
+    "reverse": (),
+    "base64": (),
+    "hex": ("sep", "prefix"),
+    "binary": ("bits", "sep"),
+    "morse": ("word_sep", "letter_sep"),
+}
+
+# Ciphers whose key or setting the engine recovers on its own, with no hint.
+SELF_SOLVING = frozenset(CIPHERS)
+
+_PROBE = "Attack the bridge at 06:30, now!"
+
+
+def describe(cipher: str) -> dict:
+    """
+    Report what a cipher does, by running it rather than by describing it.
+
+    Involution, the character classes touched and whether anything is lost are
+    all measured on a probe text. That is why this cannot drift: change the
+    implementation and the description changes with it.
+    """
+    if cipher not in CIPHER_PARAMS:
+        raise ValueError(
+            f"unknown cipher {cipher!r}; available: {', '.join(sorted(CIPHER_PARAMS))}"
+        )
+    params = CIPHER_PARAMS[cipher]
+    once = encode(_PROBE, cipher, **params)
+    twice = encode(once, cipher, **params)
+    scope = transform_scope(_PROBE, once)
+    return {
+        "cipher": cipher,
+        "family": CIPHER_FAMILY[cipher],
+        "params": params,
+        "search": list(CIPHER_SEARCH[cipher]),
+        "involution": twice == _PROBE,
+        "changed": scope["changed"],
+        "untouched": scope["untouched"],
+        "lost": round_trip_loss(_PROBE, cipher, params),
+        "self_solving": cipher in SELF_SOLVING,
+        "example": once,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Explanatory notes
+# ---------------------------------------------------------------------------
+#
+# What each cipher is, where it comes from, and how it is broken. These belong
+# in the library rather than in any single interface: the command line, the web
+# page and any future front-end should all say the same thing, and one copy is
+# the only way to guarantee it.
+#
+# Cross-references are written as [[name]] and resolved by whoever displays
+# them, so each interface may render them as a link, a colour or plain text.
+
+CIPHER_NOTES = {
+    "caesar": {
+        "era": "Ancient Rome \u00b7 1st century BC",
+        "how": [
+            "Every letter is replaced by another one a little further along the alphabet, always by the same number of places. With a shift of 3: A becomes D, B becomes E, C becomes F. At the end you wrap around \u2014 X becomes A.",
+            "Spaces, punctuation and capitals stay where they are. That is exactly the problem: the shape of the message stays visible. A three-letter word is still a three-letter word, and in English it is quite likely to be \u201cthe\u201d.",
+            "There are only 25 possible shifts. A computer tries them all instantly, then looks at which one produced real words. That is precisely what this tool does.",
+        ],
+        "history": [
+            "Suetonius tells us Julius Caesar used a shift of 3 for military messages. At the time that was enough: most of his enemies simply could not read.",
+            "It is the oldest cipher everybody knows, and probably the first one anyone learns. It is still used today \u2014 not to protect anything, but to explain what a cipher is.",
+            "One special case survived into modern use: a shift of 13, known as [[rot13]].",
+        ],
+    },
+    "rot13": {
+        "era": "The internet \u00b7 1980s",
+        "how": [
+            "A [[caesar]] locked at 13. Since the alphabet has 26 letters, 13 is exactly half: applying ROT13 twice brings you back to the original.",
+            "In other words there is no \u201cencrypt\u201d and \u201cdecrypt\u201d \u2014 it is the same action both ways.",
+            "It only touches letters. A phone number or a date passes through untouched, which is what gave rise to the other members of the family.",
+            "The name says it all: \u201cROT\u201d for rotation, the number for the shift. But that number is never arbitrary \u2014 it is always exactly half of the alphabet involved, which is what makes the operation reversible in a single move.",
+            "So there are several, depending on what you want to scramble: [[rot5]] for the ten digits, [[rot13]] for the twenty-six letters, [[rot18]] for both together, and [[rot47]] for the ninety-four keyboard characters.",
+        ],
+        "history": [
+            "It was never meant to protect anything, and nobody ever claimed otherwise.",
+            "On early internet forums it hid the punchline of a joke, the ending of a film, the answer to a riddle. The reader had to make a deliberate move to see it \u2014 the point was not to prevent, but to avoid spoiling by accident.",
+        ],
+    },
+    "rot47": {
+        "era": "Modern \u00b7 Unix culture",
+        "how": [
+            "Like [[rot13]], but instead of touching only the 26 letters it shifts all 94 characters you can type: letters, digits, punctuation, symbols.",
+            "So a phone number or an email address gets scrambled too, where [[rot13]] would leave them perfectly readable.",
+            "The shift of 47 \u2014 half of 94 \u2014 makes it reversible in a single move, just like [[rot13]].",
+            "The name says it all: \u201cROT\u201d for rotation, the number for the shift. But that number is never arbitrary \u2014 it is always exactly half of the alphabet involved, which is what makes the operation reversible in a single move.",
+            "So there are several, depending on what you want to scramble: [[rot5]] for the ten digits, [[rot13]] for the twenty-six letters, [[rot18]] for both together, and [[rot47]] for the ninety-four keyboard characters.",
+        ],
+        "history": [
+            "A practical extension, born from noticing that [[rot13]] let everything that is not a letter through. In a world where passwords and addresses are full of digits, that was a real limit.",
+        ],
+    },
+    "atbash": {
+        "era": "Ancient Hebrew \u00b7 around 600 BC",
+        "how": [
+            "The alphabet is flipped like a mirror. A becomes Z, B becomes Y, C becomes X, and so on to the middle.",
+            "There is no key and no setting: there is only one way to apply it. And like a mirror, applying it twice gives the original back.",
+            "That is also its weakness: there is nothing to guess. Anyone who recognises the method already has everything.",
+        ],
+        "history": [
+            "One of the oldest known methods. Its name comes from Hebrew: aleph-tav, beth-shin \u2014 first letter with last, second with second-to-last.",
+            "It appears in the Book of Jeremiah, where the city of Babel is written \u201cSheshach\u201d. Scholars took a long time to realise this was not an unknown place, but Babel held up to a mirror.",
+            "Mathematically it is a special case of the [[affine]] cipher.",
+        ],
+    },
+    "affine": {
+        "era": "Classical mathematics",
+        "how": [
+            "Letters are numbered 0 to 25, then a small calculation is applied: multiply by one number, add another, keep the remainder after dividing by 26.",
+            "This does two things at once: it stretches the alphabet, then shifts it. The [[caesar]] cipher only does the second, and [[atbash]] is one precise case of it.",
+            "One catch: the multiplier cannot be just anything. If it shares a divisor with 26 \u2014 like 2 or 13 \u2014 two different letters end up in the same place, and even the recipient cannot read it. The tool therefore offers only the 12 values that work.",
+        ],
+        "history": [
+            "This is not a cipher used by an empire or an army: it is a teaching exercise, the one that shows how modular arithmetic behaves.",
+            "With 12 multipliers and 26 additions there are 312 keys. That is twelve times more than the [[caesar]] cipher\u2026 and still absurdly few.",
+        ],
+    },
+    "vigenere": {
+        "era": "Bellaso, 1553 \u00b7 misattributed to Vigen\u00e8re",
+        "how": [
+            "Instead of one shift, several are used, given by a password written repeatedly under the text.",
+            "If the key is LEMON, the first letter is shifted by L, the second by E, the third by M\u2026 then it starts again. So the same letter of the message does not always encrypt the same way.",
+            "That is what makes it far stronger than a [[caesar]] cipher: the letter E, so common, no longer sticks out as an obvious spike. Its weakness lies elsewhere \u2014 the key repeats, and that repetition eventually shows.",
+        ],
+        "history": [
+            "Published by Giovan Battista Bellaso in 1553. Blaise de Vigen\u00e8re, whose name stuck, described a stronger version thirty-three years later. History misassigned the credit and never corrected it.",
+            "For three centuries it was called \u201cle chiffre ind\u00e9chiffrable\u201d. It served diplomats, armies, and the Confederacy during the American Civil War.",
+            "Charles Babbage broke it around 1854 without publishing; Friedrich Kasiski published the method in 1863. The idea: spot fragments that repeat in the ciphertext. The gap between two repetitions is almost always a multiple of the key length. Once that length is known, the text splits into several independent [[caesar]] ciphers, and each falls in a second.",
+        ],
+        "diagram": "vigenere",
+    },
+    "beaufort": {
+        "era": "19th century \u00b7 Hagelin M-209 machine",
+        "how": [
+            "Almost identical to [[vigenere]], but the calculation is reversed: instead of adding the key to the text, the text is subtracted from the key.",
+            "That detail changes everything in practice: the cipher becomes reversible in a single move. The same setting is used to write and to read.",
+        ],
+        "history": [
+            "Attributed to Sir Francis Beaufort, the naval officer known for his wind scale.",
+            "That reversibility was not mathematical elegance, it was practical necessity. On a mechanical machine, a tired operator under pressure in a shelter could not get the direction wrong: there was no direction.",
+            "The Hagelin M-209, a three-kilo metal box American troops carried to the front in the Second World War, worked on this principle.",
+        ],
+    },
+    "railfence": {
+        "era": "Classical transposition",
+        "how": [
+            "Here no letter is replaced. They are all kept; only their order changes.",
+            "The text is written in a zigzag across several lines \u2014 as if walking down and up a staircase \u2014 then read back line by line, left to right.",
+            "One important consequence: counting letters is useless. There are exactly as many E's as in the original. What gives this cipher away is not statistics, it is the small number of possible zigzags.",
+        ],
+        "history": [
+            "This is called a transposition, as opposed to substitutions like the [[caesar]] cipher. The two families are broken in completely different ways.",
+            "Rail fence is the simplest of either world: few settings, therefore little security. It shows up mostly in treasure hunts and puzzles.",
+            "Its serious older sibling is [[columnar]] transposition.",
+        ],
+        "diagram": "railfence",
+    },
+    "columnar": {
+        "era": "First and Second World Wars",
+        "how": [
+            "The text is written in even rows beneath a keyword, like a table. Then the table is read column by column, following the alphabetical order of the keyword's letters.",
+            "An important point: only the order of the letters matters, not the letters themselves. ZEBRA and ECBDA give exactly the same result, because in both cases the third column comes first, then the second, and so on.",
+            "Like [[railfence]], this is a transposition: every letter is still there, just shuffled.",
+        ],
+        "history": [
+            "Heavily used in both world wars, often applied twice in a row \u2014 called double transposition \u2014 which made it solid enough for field messages.",
+            "Breaking it without the keyword means trying every possible order. A 5-letter key means 120 combinations. A 7-letter key already means 5,040. Each added letter multiplies the work, and it quickly becomes out of reach.",
+            "That is why this tool searches keys of 2 to 5 letters by default: beyond that, the wait would be felt on every keystroke.",
+        ],
+        "diagram": "columnar",
+    },
+    "reverse": {
+        "era": "\u2014",
+        "how": [
+            "The text is read from the end to the beginning. That is all.",
+            "It is not really a cipher: there is no key and no secret. Anyone works out what happened in a second.",
+        ],
+        "history": [
+            "Its interest lies elsewhere: as a step in the middle of a chain. Placed between two other methods, it breaks up the regularities the next one would otherwise leave intact.",
+            "On its own, it stops nobody.",
+        ],
+    },
+    "base64": {
+        "era": "Electronic mail \u00b7 1992",
+        "how": [
+            "This is not encryption, and that matters: there is no key and no secret. Anyone can read it.",
+            "Its job is to translate any data \u2014 an image, a file \u2014 into ordinary letters and digits. Three bytes become four characters.",
+            "It is easy to spot: text with no spaces, mixing upper and lower case, sometimes ending in one or two equals signs.",
+        ],
+        "history": [
+            "Born of a very concrete problem: early email systems could only carry plain text. There was no way to slip a photo in.",
+            "The solution was to disguise the file as text for the journey. It is everywhere today: images embedded in web pages, login tokens, attachments.",
+            "For the same idea in a different notation, see [[hex]].",
+        ],
+    },
+    "hex": {
+        "era": "Universal notation",
+        "how": [
+            "Each character is written as two symbols, chosen from 0-9 then A-F. The word \u201cHi\u201d is written 48 69.",
+            "No more secret than [[base64]]: it is another way of writing exactly the same thing. It is used because it is compact and easy to read for a human inspecting raw data.",
+            "Why 16 symbols? Because 16 fits exactly 4 bits, so two symbols make precisely one byte, with nothing left over.",
+        ],
+        "history": [
+            "This is the everyday notation of anyone looking inside a file, a colour (#FF6600 is hexadecimal) or a digital fingerprint.",
+            "It was not invented to hide, but to make readable what otherwise is not.",
+        ],
+    },
+    "binary": {
+        "era": "\u2014",
+        "how": [
+            "Each character is written with 0s and 1s \u2014 the way a computer actually stores it.",
+            "It is the most honest representation there is, and by far the bulkiest: eight characters for a single letter.",
+            "Like [[hex]] and [[base64]], it hides nothing at all.",
+        ],
+        "history": [
+            "You meet it far more often in puzzles and games than in real transmissions. A machine has no need to spell out its bits: it already has them.",
+            "Its presence in a message is almost always a wink, not a protection.",
+        ],
+    },
+    "morse": {
+        "era": "Morse and Vail \u00b7 1837-1844",
+        "how": [
+            "Each letter becomes a series of dots and dashes. E, the most common letter in English, is a single dot. Q, far rarer, takes four signals.",
+            "This is not a cipher: it hides nothing, it carries. Any trained operator reads a Morse message as fast as plain text.",
+            "Capitals and punctuation disappear along the way. Once converted, nothing can bring them back.",
+        ],
+        "history": [
+            "Designed for the electric telegraph, where a single wire could do only two things: let current through, or not. Everything had to be expressed in two durations, one short and one long.",
+            "That physical constraint explains the code's most elegant idea: give the shortest signals to the most frequent letters, to shorten messages. It is the same principle as file compression, a century before computing.",
+            "It outlived the telegraph by more than a hundred years, and remained the maritime distress standard until 1999.",
+        ],
+    },
+    "rot5": {
+        "era": "ROT family",
+        "how": [
+            "The same idea as [[rot13]], but applied to digits instead of letters. 0 becomes 5, 1 becomes 6, and so on, wrapping round after 9.",
+            "Five is half of ten: like every ROT, it is therefore its own inverse.",
+            "Letters are left completely alone. On its own it is almost never used \u2014 its point is to be combined.",
+            "The name says it all: \u201cROT\u201d for rotation, the number for the shift. But that number is never arbitrary \u2014 it is always exactly half of the alphabet involved, which is what makes the operation reversible in a single move.",
+            "So there are several, depending on what you want to scramble: [[rot5]] for the ten digits, [[rot13]] for the twenty-six letters, [[rot18]] for both together, and [[rot47]] for the ninety-four keyboard characters.",
+        ],
+        "history": [
+            "It has no history of its own: it is a spare part, born of the need to complete [[rot13]] where that one does nothing.",
+            "You mostly meet it inside [[rot18]], which bolts it together with [[rot13]].",
+        ],
+    },
+    "rot18": {
+        "era": "ROT family",
+        "how": [
+            "[[rot13]] and [[rot5]] applied at the same time: letters rotate by 13, digits by 5.",
+            "It fills the gap left by [[rot13]] alone, which leaves numbers perfectly readable. With ROT18 a phone number gets scrambled too.",
+            "Since both halves are each their own inverse, the whole thing is too.",
+            "The name says it all: \u201cROT\u201d for rotation, the number for the shift. But that number is never arbitrary \u2014 it is always exactly half of the alphabet involved, which is what makes the operation reversible in a single move.",
+            "So there are several, depending on what you want to scramble: [[rot5]] for the ten digits, [[rot13]] for the twenty-six letters, [[rot18]] for both together, and [[rot47]] for the ninety-four keyboard characters.",
+        ],
+        "history": [
+            "A practical assembly rather than an invention. Its name comes from a slightly lazy sum: 13 plus 5.",
+            "One amusing consequence: if your text contains no digits at all, ROT18 gives exactly the same result as [[rot13]]. This tool then cannot tell them apart \u2014 and will say so rather than choose for you.",
+        ],
+    },
+}
+
+
+def _build_diagrams() -> dict:
+    """
+    Draw the three ciphers a sentence cannot convey, by running them.
+
+    Rail fence, columnar transposition and Vigenere are the ones where words
+    fail and a picture works. Generating them from the engine rather than
+    writing them by hand means they cannot describe something the code no
+    longer does.
+    """
+    word = "ATTACKATDAWN"
+
+    pattern = _rail_pattern(3, len(word), 0)
+    rails = "\n".join(
+        "rail {}  {}".format(
+            index + 1,
+            "".join(c if p == index else "." for c, p in zip(word, pattern)),
+        )
+        for index in range(3)
+    )
+    rails += "\n\nread ->  " + rail_fence(word, 3)
+
+    key = "ZEBRA"
+    width = len(key)
+    order = sorted(range(width), key=lambda i: (key[i], i))
+    rank = {col: n + 1 for n, col in enumerate(order)}
+    padded = word + "x" * ((-len(word)) % width)
+    grid = "\n".join(
+        "       " + "  ".join(padded[i:i + width]) for i in range(0, len(padded), width)
+    )
+    columns = (
+        "key    " + "  ".join(key) + "\n"
+        + "order  " + "  ".join(str(rank[i]) for i in range(width)) + "\n"
+        + "       " + "  ".join("-" for _ in key) + "\n" + grid
+        + "\n\nread columns 1->{}:  {}".format(width, columnar(word, key))
+    )
+
+    vkey = "LEMON"
+    stream = "".join(vkey[i % len(vkey)] for i in range(len(word)))
+    vigenere_diagram = (
+        "plain   " + " ".join(word) + "\n"
+        + "key     " + " ".join(stream) + "\n"
+        + "cipher  " + " ".join(vigenere(word, vkey))
+    )
+    return {"railfence": rails, "columnar": columns, "vigenere": vigenere_diagram}
+
+
+DIAGRAMS = _build_diagrams()
+
+# ---------------------------------------------------------------------------
 # Command-line entry point
 # ---------------------------------------------------------------------------
 
+def _read_text(words) -> str:
+    """
+    Take the text from the arguments, or from standard input when given "-".
+
+    A tool that can only be fed by argument cannot be used on a file, and
+    shells mangle long or multi-line text on the command line. `disypher
+    decrypt - < message.txt` sidesteps both.
+    """
+    import sys
+
+    joined = " ".join(words)
+    return sys.stdin.read() if joined.strip() == "-" else joined
+
+
+def _parse_value(raw: str):
+    """Turn a command-line value into the type the engine expects."""
+    low = raw.strip().lower()
+    if low in ("true", "yes", "on"):
+        return True
+    if low in ("false", "no", "off"):
+        return False
+    try:
+        return int(raw)
+    except ValueError:
+        return raw
+
+
+def _parse_spec(spec: str) -> tuple:
+    """
+    Read `name:key=value:key=value` into a cipher name and its parameters.
+
+    Colons separate the parameters rather than commas, because a comma is a
+    perfectly ordinary separator value — `hex:sep=,` has to remain expressible.
+    """
+    name, _, rest = spec.partition(":")
+    name = name.strip()
+    if name not in CIPHER_PARAMS:
+        raise ValueError(
+            f"unknown cipher {name!r}; available: {', '.join(sorted(CIPHER_PARAMS))}"
+        )
+    params = {}
+    for chunk in filter(None, rest.split(":")) if rest else ():
+        key, sep, value = chunk.partition("=")
+        if not sep:
+            raise ValueError(f"malformed parameter {chunk!r}, expected key=value")
+        field = key.strip()
+        if field not in CIPHER_PARAMS[name]:
+            allowed = ", ".join(CIPHER_PARAMS[name]) or "none"
+            raise ValueError(
+                f"{name} has no parameter {field!r}; accepts: {allowed}"
+            )
+        params[field] = _parse_value(value)
+    return name, params
+
+
+def _format_report(report, top: int, show_variants: bool) -> str:
+    """
+    Render a report for a human reader at a terminal.
+
+    The full JSON is the faithful representation, but it is unreadable by hand:
+    a single Caesar carries 24 alternative shifts and an unconstrained affine
+    sweep 285, so printing everything buries the answer under its own evidence.
+    """
+    if not report.candidates:
+        return report.note or "No candidate."
+
+    lines = []
+    for index, candidate in enumerate(report.candidates[:top]):
+        marker = ">" if index == 0 else " "
+        pinned = " (imposed)" if candidate.pinned else ""
+        lines.append(
+            f"{marker} {candidate.label:<12} {candidate.confidence:>5.0%}"
+            f"  {candidate.detail}{pinned}  [{candidate.language}]"
+        )
+        lines.append(f"    {candidate.plaintext}")
+        if candidate.scope["untouched"]:
+            what = ", ".join(candidate.scope["untouched"])
+            head = "unchanged" if candidate.scope["changed"] else "nothing changed"
+            lines.append(f"    ! {head}: {what}")
+        if show_variants and candidate.variants:
+            lines.append(f"    {len(candidate.variants)} other settings:")
+            for variant in candidate.variants:
+                setting = " ".join(f"{k}={v}" for k, v in variant.params.items())
+                lines.append(
+                    f"      {setting:<20} {variant.confidence:>5.0%}  "
+                    f"{variant.plaintext[:56]}"
+                )
+        lines.append("")
+
+    hidden = len(report.candidates) - top
+    if hidden > 0:
+        lines.append(f"({hidden} more — use --top {len(report.candidates)})")
+    # The three measurements the verdict rests on. Showing the conclusion
+    # without them asks the reader to take the engine's word for it.
+    lines.append(
+        f"{report.sample_length} letters · index of coincidence "
+        f"{report.index_of_coincidence:.3f} · {len(report.candidates)} hypotheses"
+    )
+    if report.note:
+        lines.append(report.note)
+    return "\n".join(lines).rstrip()
+
+
+def _format_stages(stages, show_all: bool) -> str:
+    """Render an encryption chain, one line per step."""
+    if not stages:
+        return "No step given. Add one with -c NAME, for example -c caesar:shift=7."
+    lines = []
+    for index, stage in enumerate(stages, 1):
+        last = index == len(stages)
+        if show_all or last:
+            setting = " ".join(f"{k}={v}" for k, v in stage["params"].items() if v != "")
+            marker = ">" if last else " "
+            # A step whose output equals its input did nothing: a Caesar
+            # placed after Morse has no letter left to shift. The chain stays
+            # valid, but the step is dead weight and should say so.
+            inert = " (unchanged)" if index > 1 and stage["output"] == stages[index - 2]["output"] else ""
+            lines.append(f"{marker} {index}. {stage['cipher']:<10} {setting}{inert}")
+            lines.append(f"    {stage['output']}")
+            if stage["lost"]:
+                lines.append(f"    ! permanently lost: {', '.join(stage['lost'])}")
+            if stage["scope"]["untouched"]:
+                what = ", ".join(stage["scope"]["untouched"])
+                head = "unchanged" if stage["scope"]["changed"] else "nothing changed"
+                lines.append(f"    ! {head}: {what}")
+    return "\n".join(lines)
+
+
+def _resolve_refs(text: str) -> str:
+    """Render [[name]] cross-references as plain names for a terminal."""
+    return re.sub(r"\[\[(\w+)\]\]", lambda m: m.group(1), text)
+
+
+def _wrap(text: str, width: int = 76, indent: str = "  ") -> str:
+    import textwrap
+
+    return textwrap.fill(_resolve_refs(text), width=width,
+                         initial_indent=indent, subsequent_indent=indent)
+
+
+def _format_info(info: dict, brief: bool = False) -> str:
+    """Render what `describe` measured."""
+    rows = [
+        ("Family", info["family"]),
+        ("Encrypt parameters",
+         ", ".join(f"{k}={v!r}" for k, v in info["params"].items()) or "none"),
+        ("Decrypt settings", ", ".join(info["search"]) or "none, nothing to impose"),
+        ("Changes", ", ".join(info["changed"]) or "positions only"),
+        ("Leaves untouched", ", ".join(info["untouched"]) or "nothing"),
+        ("Destroys", ", ".join(info["lost"]) or "nothing"),
+        ("Own inverse", "yes" if info["involution"] else "no"),
+        ("Solved without a key", "yes" if info["self_solving"] else "no"),
+    ]
+    width = max(len(label) for label, _ in rows)
+    note = CIPHER_NOTES.get(info["cipher"], {})
+    lines = [info["cipher"].upper()]
+    if note.get("era"):
+        lines.append(f"  {note['era']}")
+    lines.append("")
+    lines += [f"  {label:<{width}}  {value}" for label, value in rows]
+    lines += ["", f"  Example  {_PROBE}", f"        ->  {info['example']}"]
+
+    if brief or not note:
+        return "\n".join(lines)
+
+    lines += ["", "HOW IT WORKS"]
+    for paragraph in note["how"]:
+        lines += [_wrap(paragraph), ""]
+    if note.get("diagram") and note["diagram"] in DIAGRAMS:
+        lines += ["    " + row for row in DIAGRAMS[note["diagram"]].splitlines()]
+        lines.append("")
+    lines.append("HISTORY")
+    for paragraph in note["history"]:
+        lines += [_wrap(paragraph), ""]
+
+    # Cross-references are listed rather than dropped: on a terminal there is
+    # nothing to click, but knowing which cipher to look at next still helps.
+    joined = " ".join(note["how"] + note["history"])
+    seen = [n for n in dict.fromkeys(re.findall(r"\[\[(\w+)\]\]", joined))
+            if n != info["cipher"]]
+    if seen:
+        lines.append("SEE ALSO")
+        lines.append("  " + ", ".join(f"disypher info {n}" for n in seen))
+    return "\n".join(lines).rstrip()
+
+
+def _format_list() -> str:
+    """One line per cipher: its family and the parameters it accepts."""
+    lines = [f"{'CIPHER':<11} {'FAMILY':<15} {'ENCRYPT -c':<24} DECRYPT --set", ""]
+    for name in sorted(CIPHER_PARAMS, key=lambda n: (CIPHER_FAMILY[n], n)):
+        enc = ", ".join(CIPHER_PARAMS[name]) or "-"
+        dec = ", ".join(CIPHER_SEARCH[name]) or "-"
+        lines.append(f"{name:<11} {CIPHER_FAMILY[name]:<15} {enc:<24} {dec}")
+    lines += ["",
+              "ENCRYPT columns are the parameters of `-c NAME:key=value`.",
+              "DECRYPT columns are what `--set NAME.key=value` may impose.",
+              "Use `disypher info NAME` for details on one of them."]
+    return "\n".join(lines)
+
+
+_SUBCOMMANDS = ("decrypt", "encrypt", "info", "list", "banks")
+
+
+def _build_parser():
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        prog="disypher",
+        description="Classical cipher analysis.",
+        epilog=(
+            "examples:\n"
+            '  disypher decrypt "Jnxr hc Arb."\n'
+            '  disypher decrypt "Wkh fdw" --only caesar --set caesar.shift=3,7,13\n'
+            '  disypher encrypt "attack at dawn" -c caesar:shift=7 -c base64\n'
+            "  disypher info vigenere\n"
+            "  disypher list"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument("--version", action="version", version=f"disypher {__version__}")
+    subs = parser.add_subparsers(dest="command", metavar="COMMAND")
+
+    dec = subs.add_parser("decrypt", help="analyse an encrypted text")
+    dec.add_argument("text", nargs="+")
+    dec.add_argument("--only", metavar="LIST",
+                     help="restrict to these ciphers, comma separated")
+    dec.add_argument("--set", dest="settings", action="append", default=[],
+                     metavar="CIPHER.PARAM=VALUES",
+                     help="impose a setting instead of searching for it; "
+                          "several values may be given, comma separated. Repeatable.")
+    dec.add_argument("--top", type=int, default=3, metavar="N",
+                     help="how many hypotheses to show (default 3)")
+    dec.add_argument("--variants", action="store_true",
+                     help="also list the alternative settings of each hypothesis")
+    dec.add_argument("--bank", action="append", default=[], metavar="CODE",
+                     help=f"load a vocabulary bank ({', '.join(BUILTIN_BANKS)})")
+    dec.add_argument("--peel", type=int, metavar="N",
+                     help="re-analyse hypothesis N instead of printing it, to strip "
+                          "one layer of a text encrypted several times over")
+    dec.add_argument("--json", action="store_true", help="print the full report as JSON")
+
+    enc = subs.add_parser("encrypt", help="encrypt through a chain of ciphers")
+    enc.add_argument("text", nargs="+")
+    enc.add_argument("-c", "--cipher", dest="chain", action="append", default=[],
+                     metavar="NAME[:KEY=VALUE...]",
+                     help="add one step to the chain; repeat to chain more. "
+                          "Parameters are separated by colons, "
+                          "for example -c caesar:shift=7")
+    enc.add_argument("--stages", action="store_true",
+                     help="show every intermediate step, not only the result")
+    enc.add_argument("--json", action="store_true", help="print the stages as JSON")
+
+    nfo = subs.add_parser("info", help="what a cipher does, measured from the code")
+    nfo.add_argument("cipher")
+    nfo.add_argument("--brief", action="store_true",
+                     help="only the measured table, without the written notes")
+    nfo.add_argument("--json", action="store_true")
+
+    subs.add_parser("banks", help="show the loaded languages and their vocabulary")
+
+    lst = subs.add_parser("list", help="list every cipher and its parameters")
+    lst.add_argument("--json", action="store_true")
+    return parser
+
+
 def _cli(argv=None) -> int:
-    """Command-line entry point: analyse a text and print the report as JSON."""
+    """Command-line entry point."""
     import sys
 
     args = list(sys.argv[1:] if argv is None else argv)
-    if not args:
-        print('usage: disypher "encrypted text"', file=sys.stderr)
+    # `disypher "some text"` keeps working: anything that is not a known
+    # command is read as a text to analyse, which is what people type first.
+    # Every subcommand must be listed here, or the shortcut swallows it as a
+    # text to analyse — `disypher banks` would have been decrypted as the word
+    # "banks". Read from the parser rather than repeated by hand, so a command
+    # added later cannot be forgotten.
+    known = set(_SUBCOMMANDS) | {"-h", "--help", "--version"}
+    if args and args[0] not in known:
+        args.insert(0, "decrypt")
+
+    parser = _build_parser()
+    opts = parser.parse_args(args)
+    if not opts.command:
+        parser.print_help()
         return 1
-    report = analyse(" ".join(args))
+
     try:
-        print(_json.dumps(report.as_dict(), ensure_ascii=False, indent=2))
+        if opts.command == "list":
+            out = _json.dumps(
+                {n: {"family": CIPHER_FAMILY[n], "params": CIPHER_PARAMS[n]}
+                 for n in sorted(CIPHER_PARAMS)}, indent=2
+            ) if opts.json else _format_list()
+
+        elif opts.command == "info":
+            info = describe(opts.cipher)
+            if opts.json:
+                info["notes"] = CIPHER_NOTES.get(opts.cipher, {})
+                out = _json.dumps(info, ensure_ascii=False, indent=2)
+            else:
+                out = _format_info(info, opts.brief)
+
+        elif opts.command == "banks":
+            rows = [(code, lang.name, len(lang.words), "built in" if lang.builtin else "loaded")
+                    for code, lang in LANGUAGES.items()]
+            out = "\n".join(
+                [f"{'CODE':<6} {'LANGUAGE':<12} {'WORDS':>6}  SOURCE", ""]
+                + [f"{c:<6} {n:<12} {w:>6}  {s}" for c, n, w, s in rows]
+                + ["", "Load more with `disypher decrypt ... --bank CODE`.",
+                   f"Available: {', '.join(BUILTIN_BANKS)}"]
+            )
+
+        elif opts.command == "encrypt":
+            steps = []
+            for spec in opts.chain:
+                name, params = _parse_spec(spec)
+                steps.append({"cipher": name, "params": params})
+            stages = encode_stages(_read_text(opts.text), steps)
+            out = _json.dumps(stages, ensure_ascii=False, indent=2) if opts.json \
+                else _format_stages(stages, opts.stages)
+
+        else:
+            for code in opts.bank:
+                load_builtin_bank(code)
+            pins = {}
+            for setting in opts.settings:
+                target, sep, values = setting.partition("=")
+                cipher, _, param = target.partition(".")
+                if not sep or not param:
+                    raise ValueError(
+                        f"malformed setting {setting!r}, expected CIPHER.PARAM=VALUE"
+                    )
+                if cipher not in CIPHER_PARAMS:
+                    raise ValueError(f"unknown cipher {cipher!r}")
+                if param not in CIPHER_SEARCH[cipher]:
+                    allowed = ", ".join(CIPHER_SEARCH[cipher]) or "none"
+                    raise ValueError(
+                        f"{cipher} has no decrypt setting {param!r}; accepts: {allowed}"
+                    )
+                pins.setdefault(cipher, {})[param] = [
+                    _parse_value(v) for v in values.split(",")
+                ]
+            only = [c.strip() for c in opts.only.split(",")] if opts.only else None
+            report = analyse(_read_text(opts.text), only, pins or None)
+            if opts.peel is not None:
+                # Peeling replaces the report with a fresh analysis of one
+                # candidate. Text encrypted in several layers needs this:
+                # removing one layer leaves something still unreadable, and
+                # copying it back by hand is the only alternative.
+                index = opts.peel - 1
+                if not 0 <= index < len(report.candidates):
+                    raise ValueError(
+                        f"no hypothesis {opts.peel}; the report has "
+                        f"{len(report.candidates)}"
+                    )
+                report = analyse(report.candidates[index].plaintext)
+            out = _json.dumps(report.as_dict(), ensure_ascii=False, indent=2) \
+                if opts.json else _format_report(report, max(opts.top, 1), opts.variants)
+
+    except ValueError as error:
+        print(f"disypher: {error}", file=sys.stderr)
+        return 2
+
+    try:
+        print(out)
     except BrokenPipeError:
         # `disypher text | head` closes the pipe early. Python would report
         # this as a crash on exit; the shell considers it perfectly normal.
         import os
 
         os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
-        return 0
     return 0
 
 
