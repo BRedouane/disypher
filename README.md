@@ -18,7 +18,20 @@ Short sample (24 letters). Statistical analysis is unreliable below 40 letters.
 ```
 
 **Live demo:** [bredouane.github.io/disypher](https://bredouane.github.io/disypher/)
-· **Install:** `pip install disypher` · No dependencies, standard library only.
+· **Install:** [`pip install disypher`](#installation) · No dependencies,
+standard library only.
+
+---
+
+**Contents** — [What makes it different](#what-makes-it-different) ·
+[Installation](#installation) · [Ciphers](#ciphers) ·
+[Command line](#command-line) ([decrypting](#decrypting),
+[encrypting](#encrypting), [inspecting a cipher](#inspecting-a-cipher)) ·
+[Library](#library) · [How confidence is computed](#how-confidence-is-computed) ·
+[Language banks](#language-banks) · [Web interface](#web-interface) ·
+[Scope](#scope) · [Licence](#licence)
+
+---
 
 ## What makes it different
 
@@ -44,6 +57,66 @@ reported, on your text, measured rather than described.
 cipher on a probe text to determine whether it is its own inverse, which
 character classes it changes, and what it destroys. A hand-written description
 eventually contradicts the code.
+
+## Installation
+
+**Requirement: Python 3.9 or newer.** Nothing else. The engine uses the
+standard library only, so there is no dependency tree to resolve and nothing
+that can break when some other package releases a new version.
+
+Check what you have:
+
+```
+python --version
+```
+
+### Linux and macOS
+
+```
+pip install disypher
+disypher --help
+```
+
+### Windows
+
+`pip` and `python` are often missing from PATH on Windows, even after a normal
+installation. The `py` launcher ships with every official Python installer and
+is always reachable, so use it instead:
+
+```
+py -m pip install disypher
+py -m disypher --help
+```
+
+After installing, try the bare `disypher` command. If your shell finds it, use
+it — every example below is written that way. If it does not, `py -m disypher`
+does exactly the same thing: the package ships a `__main__.py` for this case,
+and no feature is lost through it.
+
+### Checking it worked
+
+```
+$ disypher "Jnxr hc Arb. Gur Zngevk unf lbh."
+
+> ROT13          63%  shift 13  [en]
+    Wake up Neo. The Matrix has you.
+```
+
+If that prints, you are done.
+
+### Upgrading and removing
+
+```
+pip install --upgrade disypher
+pip uninstall disypher
+```
+
+### Without installing
+
+You do not have to install anything to try it: the
+[live demo](https://bredouane.github.io/disypher/) runs the same engine in the
+browser through WebAssembly. To run from a clone instead, see
+[Web interface](#web-interface).
 
 ## Ciphers
 
@@ -71,7 +144,8 @@ disypher encrypt TEXT -c ...     encrypt through a chain
 
 `disypher TEXT` on its own is a shortcut for `disypher decrypt TEXT`. If the
 installed command is not on PATH — common on Windows — `python -m disypher`
-always works.
+does the same, and `py -m disypher` when `python` is missing too. See
+[Installation](#installation).
 
 ### Decrypting
 
