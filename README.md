@@ -23,7 +23,8 @@ standard library only.
 
 ---
 
-**Contents** — [What makes it different](#what-makes-it-different) ·
+**Contents** — [Why this exists](#why-this-exists) ·
+[What makes it different](#what-makes-it-different) ·
 [Installation](#installation) · [Ciphers](#ciphers) ·
 [Command line](#command-line) ([decrypting](#decrypting),
 [encrypting](#encrypting), [inspecting a cipher](#inspecting-a-cipher)) ·
@@ -32,6 +33,27 @@ standard library only.
 [Scope](#scope) · [Licence](#licence)
 
 ---
+
+## Why this exists
+
+The tools that already exist do the job, and several do it very well. But using
+one means knowing which one to reach for: choose the cipher, set the
+parameters, assemble the recipe, read the output. That is a reasonable shape
+when you already know what you are looking at.
+
+It is the wrong shape entirely when you do not — and not knowing is the normal
+case. An unknown string out of a capture, a CTF, or a client engagement does
+not announce what it is.
+
+Disypher inverts the order. **You supply the problem, not the procedure.** Paste
+the text and the engine identifies, tries, scores and ranks on its own, with no
+click required. Set a method by hand when you already know the answer and only
+want it confirmed.
+
+It was written by a penetration tester who kept running into that friction, for
+the people who run into it too: analysts working through unknown data, CTF
+players, and students who should not have to master a complicated interface
+before decoding their first string.
 
 ## What makes it different
 
@@ -340,6 +362,18 @@ These are **classical** ciphers: historical, educational, and broken. Nothing
 here protects anything, and none of it should be used to. The interesting part
 is the analysis — deciding what a text is, and admitting when the evidence does
 not support a decision.
+
+The catalogue is narrower than the engine, and deliberately so for now. Several
+encodings a security workflow meets often — Base32, Base85, URL and HTML
+entities, Unicode escapes, XOR — are not implemented yet, and language
+detection rests on word banks rather than n-grams, which shows on very short
+samples. Multi-layer texts are peeled one layer at a time with `--peel`, not
+unwound automatically.
+
+This is a personal project, developed in the open and extended as it goes. The
+honest summary is that the orchestration is further along than the coverage,
+and that is the order it was built in on purpose: a wide catalogue that guesses
+badly is worth less than a narrow one that knows when to stop.
 
 ## Licence
 
