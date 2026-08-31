@@ -18,14 +18,81 @@ Short sample (24 letters). Statistical analysis is unreliable below 40 letters.
 ```
 
 **Live demo:** [bredouane.github.io/disypher](https://bredouane.github.io/disypher/)
-· **Install:** [`pip install disypher`](#installation) · No dependencies,
-standard library only.
+· **Portable web app:** download, unzip and open `index.html` · **Optional CLI:**
+[`pip install disypher`](#installation-optional-cli) · No Python package dependencies.
+
+## Private, portable web app
+
+The downloaded web app runs entirely on the device. Unzip the folder and
+double-click `index.html`: no server, Python installation, account or network
+connection is required.
+
+- input text is processed inside the browser;
+- nothing is uploaded or saved by Disypher;
+- no telemetry or remote font request is made;
+- a dependency-free browser port and all language banks are bundled locally;
+- a startup self-test validates cipher, encoding, Unicode and analysis behavior
+  before the privacy badge receives its check mark;
+- the same folder can also be served normally on the web.
+
+Keep `index.html`, `browser-engine.js` and `browser-data.js` together. The
+`disypher/` folder remains the Python/CLI reference implementation.
+
+## Why the portable browser edition
+
+Disypher originally ran its Python engine inside the browser through a
+WebAssembly runtime. That preserved one implementation, but it also made the
+web tool dependent on a comparatively large runtime and prevented a reliable
+double-click workflow in browsers that restrict modules loaded from `file://`.
+
+For the portable browser edition, we made a deliberate product decision:
+**the web app must belong to the person using it, not to the machine hosting
+it.** The browser engine is now a dependency-free JavaScript port of the Python
+reference. It starts from ordinary local files, performs no automatic network
+request and needs no local server.
+
+This matters especially when the submitted text should not leave the device:
+
+- penetration testers and security analysts may work with client data,
+  captures and internal identifiers;
+- students and CTF players should be able to start without installing Python
+  or understanding virtual environments;
+- teachers and workshop organisers can distribute one folder that works on an
+  offline machine;
+- occasional users can open the tool, solve one problem and close it without
+  creating an account or leaving application data behind;
+- developers still retain the Python package and CLI for scripting,
+  automation and integration.
+
+The two engines are not merely intended to behave alike. The Python
+implementation is the reference, and automated parity fixtures compare all 17
+public methods, their parameters and pipeline metadata, complete analyses and
+the four optional language banks. The browser also runs 20 local startup
+checks. Only after they pass does the interface display:
+
+> **Processed locally · not saved ✓**
+
+The check mark therefore means more than “the page loaded.” It confirms that
+the local engine passed its cipher, encoding, Unicode and analysis checks. The
+privacy statement describes the actual execution path: inputs remain in the
+current browser page, Disypher does not transmit or persist them, and static
+hosting serves files only.
+
+The result is one project with two deliberate forms:
+
+| Use case | Recommended form |
+| --- | --- |
+| Immediate, private or offline use | Open `index.html` |
+| Public website | Serve the same folder as static files |
+| Terminal, scripts and automation | Install the optional Python CLI |
 
 ---
 
-**Contents** — [Why this exists](#why-this-exists) ·
+**Contents** — [Private, portable web app](#private-portable-web-app) ·
+[Why the portable browser edition](#why-the-portable-browser-edition) ·
+[Why this exists](#why-this-exists) ·
 [What makes it different](#what-makes-it-different) ·
-[Installation](#installation) · [Ciphers](#ciphers) ·
+[Installation](#installation-optional-cli) · [Ciphers](#ciphers) ·
 [Command line](#command-line) ([decrypting](#decrypting),
 [encrypting](#encrypting), [inspecting a cipher](#inspecting-a-cipher)) ·
 [Library](#library) · [How confidence is computed](#how-confidence-is-computed) ·
@@ -80,7 +147,10 @@ cipher on a probe text to determine whether it is its own inverse, which
 character classes it changes, and what it destroys. A hand-written description
 eventually contradicts the code.
 
-## Installation
+## Installation (optional CLI)
+
+Nothing needs to be installed for the web app. The instructions below are only
+for people who want the command-line tool or the Python library.
 
 **Requirement: Python 3.9 or newer.** Nothing else. The engine uses the
 standard library only, so there is no dependency tree to resolve and nothing
@@ -135,10 +205,15 @@ pip uninstall disypher
 
 ### Without installing
 
-You do not have to install anything to try it: the
-[live demo](https://bredouane.github.io/disypher/) runs the same engine in the
-browser through WebAssembly. To run from a clone instead, see
-[Web interface](#web-interface).
+You do not have to install anything to try it. The
+[live demo](https://bredouane.github.io/disypher/) runs the browser edition —
+a dependency-free JavaScript port of the Python engine, checked against it by
+the parity suite. Download the folder and open `index.html` and you get the
+same thing with no network at all. See
+[the portable browser edition](#why-the-portable-browser-edition).
+
+Installing the Python package is what you want for the command line, for
+scripting, and for the reference implementation itself.
 
 ## Ciphers
 
@@ -167,7 +242,7 @@ disypher encrypt TEXT -c ...     encrypt through a chain
 `disypher TEXT` on its own is a shortcut for `disypher decrypt TEXT`. If the
 installed command is not on PATH — common on Windows — `python -m disypher`
 does the same, and `py -m disypher` when `python` is missing too. See
-[Installation](#installation).
+[Installation](#installation-optional-cli).
 
 ### Decrypting
 
@@ -347,14 +422,18 @@ language the engine can identify.
 
 ## Web interface
 
-`index.html` runs the engine in the browser through
-[Pyodide](https://pyodide.org). It fetches `disypher/__init__.py` as-is rather
-than reimplementing it in JavaScript, so the page and the published package can
-never drift apart. Serve it over HTTP:
+`index.html` loads the autonomous engine through ordinary local script tags.
+It therefore works by double-clicking the file, fully offline, and behaves the
+same on static hosting. No server is required. A server remains optional for
+development or hosting:
 
 ```
 python -m http.server 8000
 ```
+
+Parity is checked against the Python reference with `tests/parity.cjs`: all 17
+public methods, their pipeline metadata, full analyses, pinned parameters and
+the four optional banks are compared as structured output.
 
 ## Scope
 

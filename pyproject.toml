@@ -53,4 +53,18 @@ packages = ["disypher"]
 [tool.hatch.build.targets.sdist]
 # The web front-end is not part of the library, but shipping it in the source
 # archive keeps the published package a faithful copy of the repository.
-include = ["disypher", "index.html", "README.md", "LICENSE", "pyproject.toml"]
+#
+# The three browser files travel together or not at all: index.html loads
+# browser-data.js and browser-engine.js by name, so shipping the page without
+# them would put a broken demo inside the published archive.
+include = [
+    "disypher",
+    "index.html",
+    "browser-data.js",
+    "browser-engine.js",
+    "tests",
+    "tools",
+    "README.md",
+    "LICENSE",
+    "pyproject.toml",
+]

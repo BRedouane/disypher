@@ -8,3 +8,12 @@ venv/
 .pytest_cache/
 .DS_Store
 Thumbs.db
+
+# Remains of the WebAssembly approach the browser edition replaced. 31 MB in
+# total, referenced by nothing but the tool that generates the first one. They
+# are kept out of history on purpose: committing them is irreversible, and a
+# repository that costs 31 MB to clone for files nobody loads is a repository
+# people stop cloning. Regenerate with tools/build-offline-assets.js if the
+# runtime is ever needed again.
+offline-assets.js
+vendor/

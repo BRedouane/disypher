@@ -6,21 +6,15 @@
     <title>Disypher — classical cipher analyser</title>
     <meta
       name="description"
-      content="Decrypt a text and rank the hypotheses by confidence. Python engine running in the browser."
-    />
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link
-      href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500&family=IBM+Plex+Mono:wght@400;500&display=swap"
-      rel="stylesheet"
+      content="Decrypt a text and rank the hypotheses by confidence. Autonomous offline browser engine."
     />
 
     <!--
       One file, no build step, no framework.
 
-      The engine is not rewritten in JavaScript: `disypher/__init__.py` is loaded as-is and
-      executed by Pyodide, a build of Python compiled to WebAssembly. The same
-      file therefore runs in a terminal and in this page.
+      The browser engine is a dependency-free parity port of the Python library.
+      It is loaded by ordinary script tags, so direct file:// opening and static
+      hosting use exactly the same local execution path.
 
       The engine returns no ready-made sentences: it returns codes and
       parameters. The wording seen here is assembled by the page, which is what
@@ -144,6 +138,7 @@
         white-space: nowrap;
       }
       .head-actions { display: flex; align-items: center; gap: 0.6rem; flex-shrink: 0; }
+      .privacy-badge { color: var(--acid); border: 1px solid rgba(200,255,61,.22); border-radius: 999px; padding: .48rem .7rem; font: 400 .58rem var(--mono); letter-spacing: .04em; white-space: nowrap; }
       .backlink {
         padding: 0.36rem 0.8rem;
         border: 1px solid var(--line);
@@ -879,6 +874,7 @@
           <p class="tagline" data-i18n="kicker"></p>
         </div>
         <div class="head-actions">
+          <span class="privacy-badge" data-i18n="privacy"></span>
           <!-- Absolute link to the main site: Disypher is meant to be published on
                its own as a public tool, where a relative path would point
                nowhere. -->
@@ -968,7 +964,8 @@
 
     <footer data-i18n-html="footer"></footer>
 
-    <script src="https://cdn.jsdelivr.net/pyodide/v0.26.4/full/pyodide.js"></script>
+    <script src="browser-data.js"></script>
+    <script src="browser-engine.js"></script>
     <script>
       const $ = (id) => document.getElementById(id);
 
@@ -985,7 +982,9 @@
          not the other way round. */
       const TEXT = {
         en: {
-          kicker: "Classical cipher analysis · Python engine in the browser",
+          kicker: "Classical cipher analysis · autonomous browser engine",
+          privacy: "Verifying local engine…",
+          privacyVerified: "Processed locally · not saved ✓",
           backlink: "← Disyner",
           tabDecrypt: "Decrypt",
           tabEncrypt: "Encrypt",
@@ -1087,12 +1086,13 @@
           dShift: "shift {v}", dRails: "{v} rails", dOffset: "offset {v}",
           dKey: 'key "{v}"', dValid: "valid decoding",
           footer:
-            'Engine: <code>disypher</code> — standard library only, no dependencies. Run here by ' +
-            '<a href="https://pyodide.org" target="_blank" rel="noopener noreferrer">Pyodide</a>, ' +
-            'Python compiled to WebAssembly: this page runs the original file, not a JavaScript translation.',
+            'Engine: <code>disypher</code> — autonomous browser build, no dependency and no network request. ' +
+            'The privacy badge is shown as verified only after local cipher, encoding, Unicode and analysis tests pass.',
         },
         fr: {
-          kicker: "Analyse de chiffrements classiques · moteur Python dans le navigateur",
+          kicker: "Analyse de chiffrements classiques · moteur navigateur autonome",
+          privacy: "Vérification du moteur local…",
+          privacyVerified: "Traité localement · non enregistré ✓",
           backlink: "← Disyner",
           tabDecrypt: "Déchiffrer",
           tabEncrypt: "Chiffrer",
@@ -1196,10 +1196,9 @@
           dShift: "décalage {v}", dRails: "{v} rails", dOffset: "décalage {v}",
           dKey: "clé « {v} »", dValid: "décodage valide",
           footer:
-            'Moteur : <code>disypher</code> — bibliothèque standard uniquement, aucune dépendance. ' +
-            'Exécuté ici par <a href="https://pyodide.org" target="_blank" rel="noopener noreferrer">Pyodide</a>, ' +
-            "une compilation de Python en WebAssembly : la page fait tourner le fichier original, " +
-            "pas une traduction en JavaScript.",
+            'Moteur : <code>disypher</code> — version navigateur autonome, sans dépendance ni requête réseau. ' +
+            "Le badge de confidentialité n'est validé qu'après la réussite locale des tests de chiffrement, " +
+            "d'encodage, Unicode et d'analyse.",
         },
       };
 
@@ -1923,7 +1922,7 @@
         morse:     { fields: ["sep"], defaults: { sep: " / " }, rename: { sep: "word_sep" } },
       };
 
-      /* Global ceiling. Each step is one more Python call, and the text grows by
+      /* Global ceiling. Each step is one more engine call, and the text grows by
          a third with every base64 pass: ten passes are enough to produce
          megabytes the browser will struggle to display. */
       const MAX_STEPS = 10;
@@ -2184,15 +2183,9 @@
         const original = button.textContent;
         button.textContent = t("bankLoading");
         try {
-          const bank = await fetch(`disypher/banks/${code}.json`).then((response) => {
-            if (!response.ok) throw new Error("bank not found");
-            return response.json();
-          });
-          pyodide.globals.set("_bank", bank);
-          // `load_bank` tells a language from a shared supplement on its own.
-          // Calling `register_language` fails on the technical bank, which has
-          // no frequency table.
-          await pyodide.runPythonAsync("disypher.load_bank(_bank.to_py())");
+          // Banks are embedded in browser-data.js. No fetch is performed, so
+          // this works identically from file://, offline, and on static hosting.
+          DisypherEngine.loadBank(code === "tech" ? "universal" : code);
           loadedBanks.add(code);
           buildBanks();
           schedule(0);
@@ -2297,7 +2290,7 @@
           select.onchange = () => {
             // Changing method resets the values: the previous ones mean
             // nothing to the new method, and keeping them would produce mute
-            // parameters that Python would ignore silently.
+            // parameters that the engine would ignore silently.
             steps[Number(select.dataset.stepMethod)] = newStep(select.value);
             renderSteps();
             schedule(0);
@@ -2369,7 +2362,7 @@
       }
 
       async function run() {
-        if (!pyodide) return;
+        if (!engineReady) return;
         if (running) { pending = true; return; }
         running = true;
         setStatus("busy", t("working"));
@@ -2398,15 +2391,11 @@
           $("output").innerHTML = `<p class="empty">${escapeHtml(t("emptyInput"))}</p>`;
           return;
         }
-        pyodide.globals.set("_text", text);
-        pyodide.globals.set("_only", filterState.size ? Array.from(filterState) : null);
-        pyodide.globals.set("_pins", readPins());
-        const raw = await pyodide.runPythonAsync(`
-only = list(_only) if _only is not None else None
-pins = _pins.to_py() if _pins is not None else None
-json.dumps(disypher.analyse(_text, only, pins).as_dict(), ensure_ascii=False)
-        `);
-        lastReport = JSON.parse(raw);
+        lastReport = DisypherEngine.analyse(
+          text,
+          filterState.size ? Array.from(filterState) : null,
+          readPins()
+        );
         render(lastReport);
       }
 
@@ -2424,8 +2413,7 @@ json.dumps(disypher.analyse(_text, only, pins).as_dict(), ensure_ascii=False)
           const params = {};
           for (const field of spec.fields) {
             const name = (spec.rename || {})[field] || field;
-            // Numeric fields must cross as numbers: Python would refuse a
-            // string for a rail count.
+            // Numeric fields must remain numbers: a rail count is not text.
             params[name] = NUMBER_FIELDS.has(field)
               ? Number(step.values[field])
               : step.values[field];
@@ -2433,12 +2421,7 @@ json.dumps(disypher.analyse(_text, only, pins).as_dict(), ensure_ascii=False)
           for (const flag of spec.flags || []) params[flag] = step.flags.has(flag);
           return { cipher: step.method, params };
         });
-        pyodide.globals.set("_text", text);
-        pyodide.globals.set("_steps", payload);
-        const raw = await pyodide.runPythonAsync(
-          `json.dumps(disypher.encode_stages(_text, _steps.to_py()), ensure_ascii=False)`
-        );
-        lastStages = { text, stages: JSON.parse(raw) };
+        lastStages = { text, stages: DisypherEngine.encodeStages(text, payload) };
         renderStages(lastStages);
       }
 
@@ -2796,27 +2779,27 @@ json.dumps(disypher.analyse(_text, only, pins).as_dict(), ensure_ascii=False)
         // recomputed: switching language must cost the engine nothing.
         if (mode === "decrypt" && lastReport) render(lastReport);
         if (mode === "encrypt" && lastStages) renderStages(lastStages);
-        if (pyodide) setStatus("ready", t("ready"));
+        if (engineReady) {
+          setStatus("ready", t("ready"));
+          document.querySelector(".privacy-badge").textContent = t("privacyVerified");
+        }
       }
       document.querySelectorAll("[data-lang]").forEach((button) => {
         button.onclick = () => applyLanguage(button.dataset.lang);
       });
 
       /* ══ Startup ══ */
-      let pyodide = null;
+      let engineReady = false;
 
       async function boot() {
         setStatus("boot", t("booting"));
         try {
-          pyodide = await loadPyodide();
-          // The library itself is fetched, not a copy: the page and the
-          // published package can never drift apart.
-          const source = await fetch("disypher/__init__.py").then((response) => {
-            if (!response.ok) throw new Error("disypher module not found");
-            return response.text();
-          });
-          pyodide.FS.writeFile("disypher.py", source);
-          await pyodide.runPythonAsync("import disypher, json");
+          // This is a real gate, not a decorative badge. It exercises every
+          // method family, round trips, UTF-8 encodings and a known analysis
+          // before the application calls itself ready.
+          DisypherEngine.selfTest();
+          engineReady = true;
+          document.querySelector(".privacy-badge").textContent = t("privacyVerified");
           setStatus("ready", t("ready"));
           run();
         } catch (error) {
