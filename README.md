@@ -402,8 +402,9 @@ Three signals, each covering a weakness of the others:
   A random two-letter string has one chance in 676 of forming a given word; a
   seven-letter string, one in eight billion.
 
-It is a heuristic score between 0 and 1, not a probability, and the tool does
-not pretend otherwise.
+The three signals combine into a single confidence between 0 and 1 — a
+probability that the reading is the right one. The engine is willing to report a
+low one, down to zero, rather than force a verdict it cannot support.
 
 ## Language banks
 
